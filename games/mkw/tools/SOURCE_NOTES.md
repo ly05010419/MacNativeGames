@@ -47,3 +47,7 @@ These checks do not establish correct full-game rendering.
 
 `scripts/import_dump.py` is a copy of `games/totk/scripts/import_dump.py` at `17f79ddc`, unchanged. `build_mkw.py --dump` runs it to
 pack a dumped game folder's RomFS (no NCA) into `romfs.bin` the way the Switch 2 games do.
+
+### NUP reader (copy)
+
+`third_party/nup` is a copy of `games/oot/third_party/nup` (`a55uka/nup` at `d40d9cfa50792ba8021d2967d994d1b1c25d62b0`, MIT, with Python 3.14 `compression.zstd` support retained from `786ddc00`). `scripts/import_nup.py` uses it to extract verified ExeFS modules and pack a 16-byte-aligned `romfs.bin` from a Switch 2 NUP archive.

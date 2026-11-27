@@ -3830,13 +3830,17 @@ static id<MTLBuffer> up_param_alloc(size_t *off) {
     *off = g_up_pblock_off; g_up_pblock_off += 64;
     return g_up_pblock;
 }
-static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image, MTLSize size,
-                        id<MTLTexture> dst, NSUInteger slice, NSUInteger level) {
+static void up_blit_add_at(id<MTLBuffer> src, size_t off, size_t row, size_t image, MTLSize size,
+                           id<MTLTexture> dst, NSUInteger slice, NSUInteger level, MTLOrigin origin) {
     if (g_nup_blits == g_up_blitcap) {
         g_up_blitcap = g_up_blitcap ? g_up_blitcap * 2 : 256;
         g_up_blits = realloc(g_up_blits, g_up_blitcap * sizeof *g_up_blits);
     }
-    g_up_blits[g_nup_blits++] = (up_blit){src, off, row, image, size, dst, slice, level, MTLOriginMake(0, 0, 0)};
+    g_up_blits[g_nup_blits++] = (up_blit){src, off, row, image, size, dst, slice, level, origin};
+}
+static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image, MTLSize size,
+                        id<MTLTexture> dst, NSUInteger slice, NSUInteger level) {
+    up_blit_add_at(src, off, row, image, size, dst, slice, level, MTLOriginMake(0, 0, 0));
 }
 
 /* TOTK: small mirrored textures (<= PKG_HASH_MAX bytes) are checked by a content hash once per submission instead of by
@@ -3970,6 +3974,118 @@ static id<MTLTexture> tex_new_res(MTLTextureDescriptor *d) {
     id<MTLTexture> t = [g_dev newTextureWithDescriptor:d];
     if (t) res_add(t);
     return t;
+}
+/* Byte size per texel for uncompressed color formats; 0 for depth/stencil/compressed. */
+static size_t pf_color_bpp(MTLPixelFormat pf) {
+    switch (pf) {
+        case MTLPixelFormatR8Unorm: case MTLPixelFormatR8Unorm_sRGB: case MTLPixelFormatR8Snorm:
+        case MTLPixelFormatR8Uint: case MTLPixelFormatR8Sint: case MTLPixelFormatA8Unorm:
+            return 1;
+        case MTLPixelFormatR16Unorm: case MTLPixelFormatR16Snorm: case MTLPixelFormatR16Uint:
+        case MTLPixelFormatR16Sint: case MTLPixelFormatR16Float:
+        case MTLPixelFormatRG8Unorm: case MTLPixelFormatRG8Unorm_sRGB: case MTLPixelFormatRG8Snorm:
+        case MTLPixelFormatRG8Uint: case MTLPixelFormatRG8Sint:
+        case MTLPixelFormatB5G6R5Unorm: case MTLPixelFormatA1BGR5Unorm:
+        case MTLPixelFormatABGR4Unorm: case MTLPixelFormatBGR5A1Unorm:
+            return 2;
+        case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint: case MTLPixelFormatR32Float:
+        case MTLPixelFormatRG16Unorm: case MTLPixelFormatRG16Snorm: case MTLPixelFormatRG16Uint:
+        case MTLPixelFormatRG16Sint: case MTLPixelFormatRG16Float:
+        case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB: case MTLPixelFormatRGBA8Snorm:
+        case MTLPixelFormatRGBA8Uint: case MTLPixelFormatRGBA8Sint:
+        case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+        case MTLPixelFormatRGB10A2Unorm: case MTLPixelFormatRGB10A2Uint:
+        case MTLPixelFormatRG11B10Float: case MTLPixelFormatRGB9E5Float:
+        case MTLPixelFormatBGR10A2Unorm:
+            return 4;
+        case MTLPixelFormatRG32Uint: case MTLPixelFormatRG32Sint: case MTLPixelFormatRG32Float:
+        case MTLPixelFormatRGBA16Unorm: case MTLPixelFormatRGBA16Snorm: case MTLPixelFormatRGBA16Uint:
+        case MTLPixelFormatRGBA16Sint: case MTLPixelFormatRGBA16Float:
+            return 8;
+        case MTLPixelFormatRGBA32Uint: case MTLPixelFormatRGBA32Sint: case MTLPixelFormatRGBA32Float:
+            return 16;
+        default:
+            return 0;
+    }
+}
+/* Zero-initialize newly allocated GPU-only private color textures: Metal may leave non-zero sentinel bytes
+   (e.g. 0xffff 0000 ffff ffff -> -NaN in RGBA16Float), which turn into qNaN if partially blended before a clear. */
+static void tex_zero_new(id<MTLTexture> mt) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("TOTK_ZERO_NEW_TEX"); on = !e || atoi(e); }
+    if (!on || !mt || mt.storageMode != MTLStorageModePrivate || mt.sampleCount != 1) return;
+    MTLTextureType tt = mt.textureType;
+    if (tt != MTLTextureType1D && tt != MTLTextureType1DArray && tt != MTLTextureType2D &&
+        tt != MTLTextureType2DArray && tt != MTLTextureTypeCube && tt != MTLTextureTypeCubeArray &&
+        tt != MTLTextureType3D) return;
+    size_t bpp = pf_color_bpp(mt.pixelFormat);
+    if (!bpp) return;
+    static id<MTLBuffer> g_zero_buf;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_zero_buf = [g_dev newBufferWithLength:(1u << 20) options:MTLResourceStorageModeShared];
+        if (g_zero_buf) { memset(g_zero_buf.contents, 0, g_zero_buf.length); res_add(g_zero_buf); }
+    });
+    if (!g_zero_buf) return;
+    int use_up = !atomic_load(&g_sub_thread_set) || on_sub_thread();
+    id<MTLCommandBuffer> cb = nil;
+    id<MTLBlitCommandEncoder> bl = nil;
+    if (use_up) {
+        up_begin();
+    } else {
+        cb = q_cb();
+        bl = [cb blitCommandEncoder];
+    }
+    NSUInteger slices = (tt == MTLTextureTypeCube) ? 6 :
+                        (tt == MTLTextureTypeCubeArray) ? mt.arrayLength * 6 :
+                        (tt == MTLTextureType3D) ? 1 : mt.arrayLength;
+    for (NSUInteger lv = 0; lv < mt.mipmapLevelCount; lv++) {
+        NSUInteger lw = MAX(mt.width >> lv, 1u);
+        NSUInteger lh = (tt == MTLTextureType1D || tt == MTLTextureType1DArray) ? 1u : MAX(mt.height >> lv, 1u);
+        NSUInteger ld = (tt == MTLTextureType3D) ? MAX(mt.depth >> lv, 1u) : 1u;
+        size_t row = (size_t)lw * bpp;
+        if (row > g_zero_buf.length) continue;
+        void (^emit)(size_t, size_t, MTLSize, NSUInteger, MTLOrigin) = ^(size_t rbytes, size_t ibytes, MTLSize sz, NSUInteger sl, MTLOrigin org) {
+            if (use_up) up_blit_add_at(g_zero_buf, 0, rbytes, ibytes, sz, mt, sl, lv, org);
+            else [bl copyFromBuffer:g_zero_buf sourceOffset:0 sourceBytesPerRow:rbytes sourceBytesPerImage:ibytes sourceSize:sz toTexture:mt destinationSlice:sl destinationLevel:lv destinationOrigin:org];
+        };
+        if (tt == MTLTextureType1D || tt == MTLTextureType1DArray) {
+            for (NSUInteger s = 0; s < slices; s++) emit(0, 0, MTLSizeMake(lw, 1, 1), s, MTLOriginMake(0, 0, 0));
+        } else if (tt == MTLTextureType3D) {
+            size_t plane = row * lh;
+            if (plane <= g_zero_buf.length) {
+                NSUInteger dz_max = (NSUInteger)(g_zero_buf.length / plane);
+                for (NSUInteger z = 0; z < ld; z += dz_max) {
+                    NSUInteger dz = MIN(dz_max, ld - z);
+                    emit(row, plane, MTLSizeMake(lw, lh, dz), 0, MTLOriginMake(0, 0, z));
+                }
+            } else {
+                NSUInteger dy_max = (NSUInteger)(g_zero_buf.length / row);
+                for (NSUInteger z = 0; z < ld; z++) {
+                    for (NSUInteger y = 0; y < lh; y += dy_max) {
+                        NSUInteger dy = MIN(dy_max, lh - y);
+                        emit(row, row * dy, MTLSizeMake(lw, dy, 1), 0, MTLOriginMake(0, y, z));
+                    }
+                }
+            }
+        } else {
+            NSUInteger dy_max = (NSUInteger)(g_zero_buf.length / row);
+            for (NSUInteger s = 0; s < slices; s++) {
+                for (NSUInteger y = 0; y < lh; y += dy_max) {
+                    NSUInteger dy = MIN(dy_max, lh - y);
+                    emit(row, row * dy, MTLSizeMake(lw, dy, 1), s, MTLOriginMake(0, y, 0));
+                }
+            }
+        }
+    }
+    if (use_up) {
+        [g_up_texs addObject:mt];
+        if (!g_cb) up_flush();
+    } else {
+        [bl endEncoding];
+        cb_commit(cb);
+        cb_wait(cb);
+    }
 }
 #ifdef GAME_MKW
 /* Sparse layout, mip tails and shared physical tiles from kartnative (MIT),
@@ -4368,7 +4484,10 @@ static void *tex_mtl_p(const tex_t *ct) {
     if (!mt) {
         if (g_tex_prepare_split) return NULL; /* retry preserves the shared GPU content */
         mt = sparse_tex_new(t, d);
-        if (!mt) mt = tex_new_res(d);
+        if (!mt) {
+            mt = tex_new_res(d);
+            if (mt) tex_zero_new(mt);
+        }
         if (!mt) { RED_ONCE(2, "建 MTLTexture 失败 %ux%u 格式 %#x 目标 %d", t->d.width, t->d.height, t->d.format, t->d.target); return NULL; }
         if (pool_log_on() && t->L.size >= (256ull << 20)) MLOG("[gpu-big] new texture serial %llu mem %p pool %p flags %#x size %llu MB %ux%u fmt %#x levels %u tflags %#x frame %llu", (unsigned long long)t->serial, (void *)t->mem,
                                                                (void *)t->pool, t->pool ? t->pool->flags : 0, (unsigned long long)(t->L.size >> 20), t->d.width, t->d.height, t->d.format, t->d.levels, t->d.flags, (unsigned long long)atomic_load(&g_cur_frame));

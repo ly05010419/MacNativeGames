@@ -270,15 +270,23 @@ def keyseq(at):
     return (q[3].address + 4, d // 8) if d % 8 == 0 and 0 <= d // 8 < 8 else None
 # C windows intentionally change the call word as well as the preceding head.
 # Inspect the actual decoded sequence, including the original link-producing PC.
+_CALL_REG_ONLY = ('mov', 'movz', 'movk', 'movn', 'orr', 'and', 'eor', 'add', 'sub', 'lsl', 'lsr', 'asr', 'sxtw', 'uxtw',
+                  'fmov', 'ubfx', 'sbfx', 'ubfiz', 'sbfiz', 'bfi', 'bfxil', 'neg', 'mvn', 'madd', 'mul')
 for prefix, call in calls.items():
     start = btarget(prefix)
     if start is None or not PO <= start < len(pat):
         bad(f'call preparation has no trampoline {prefix:#x}'); continue
     decoded = list(_md.disasm(pat[start:start + 36], start))
     first = next(_md.disasm(orig[prefix:prefix + 4], prefix), None)
-    safe = first and first.mnemonic in ('str', 'stp', 'stur', 'ldr', 'ldp', 'ldur') and not first.writeback \
+    safe_stack = first and first.mnemonic in ('str', 'stp', 'stur', 'ldr', 'ldp', 'ldur') and not first.writeback \
         and first.reg_name(first.operands[-1].mem.base) in ('sp', 'fp') and not first.operands[-1].mem.index \
         and (first.reg_name(first.operands[-1].mem.base) != 'sp' or first.operands[-1].mem.disp >= 0) and not RX18.search(first.op_str)
+    safe_reg = False
+    if first and not safe_stack and first.mnemonic in _CALL_REG_ONLY and not any(o.type == 3 for o in first.operands):
+        r_read, r_written = first.regs_access()
+        if not ({first.reg_name(r) for r in (*r_read, *r_written)} & {'x18', 'w18', 'x30', 'w30', 'sp', 'wsp'}):
+            safe_reg = True
+    safe = safe_stack or safe_reg
     slot = keyseq(start + 8)
     if len(decoded) != 9 or not safe or W(pat, start) != W(orig, prefix) \
             or W(orig, call) != 0xD63F0240 or W(pat, call) != 0xD63F03C0 \

@@ -856,7 +856,15 @@ if calls:
         tag, value = struct.unpack_from('<qQ', IMG, dyn); dyn += 16
         if tag == 0: break
         tags[tag] = value
-    count = struct.unpack_from('<I', IMG, tags[4] + 4)[0]
+    if 4 in tags:
+        count = struct.unpack_from('<I', IMG, tags[4] + 4)[0]
+    else:
+        # Newer SDKs may provide GNU hash only. The verified NSO header records
+        # the complete dynamic-symbol extent in the read-only segment.
+        _, _, symbol_offset, symbol_size = struct.unpack_from('<IIII', d, 0x90)
+        assert RO_OFF + symbol_offset == tags[6] and symbol_size % 24 == 0
+        assert 0 < symbol_size <= DATA_OFF - tags[6] and tags[11] == 24
+        count = symbol_size // 24
     for where, addend in decode_relr(IMG, tags, DATA_OFF, KEY_PAGE_OFF):
         assert addend not in call_targets, f'RELR pointer enters unprepared call: {where:x}'
     for i in range(count):

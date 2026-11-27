@@ -99,6 +99,17 @@ static Preference preference(unsigned w,unsigned h,unsigned format,unsigned mode
     dimensions(w,h); if(format!=3 || (mode!=1&&mode!=2)) { LOG("preference format=%u mode=%u",format,mode); runtime_fail("codec: output other than NV12"); }
     Preference p={{(uint64_t)(mode==1?1:4)<<32,(w-1)|((uint64_t)(h-1)<<16),0,0,0,0,0,0}}; return p;
 }
+/* Switch 2 SDK (MKW v917504+): ImageTilingMode (1 linear, 2 block) + NV12 (3) / RGBA (2). */
+static Preference preference_v2(uint16_t w,uint16_t h,unsigned format,unsigned tiling) {
+    dimensions(w,h);
+    if((format!=2&&format!=3)||(tiling!=1&&tiling!=2)) {
+        LOG("preference_v2 format=%u tiling=%u",format,tiling);
+        runtime_fail("codec: unsupported image preference");
+    }
+    uint64_t tag=(tiling==1)?(format==3?1ULL:2ULL):(format==3?4ULL:5ULL);
+    Preference p={{tag<<32,(uint64_t)(w-1)|((uint64_t)(h-1)<<16),0,0,0,0,0,0}};
+    return p;
+}
 static Preference preference_compat(unsigned w,unsigned h,unsigned format,unsigned mode) {
     Preference p=preference(w,h,format,mode);
     if(mode==2)p.words[0]=(uint64_t)7<<32; /* SDK 2c6040 */
@@ -107,7 +118,9 @@ static Preference preference_compat(unsigned w,unsigned h,unsigned format,unsign
 static unsigned pool_size(uint64_t *size,uint64_t *align,const Preference *pref,unsigned count) {
     unsigned w=(pref->words[1]&65535)+1,h=((pref->words[1]>>16)&65535)+1; dimensions(w,h);
     if(!count||count>8)runtime_fail("codec: image pool count");
-    *size=(uint64_t)w*h*3/2*count; *align=4096; return 0;
+    uint64_t tag=pref->words[0]>>32;
+    uint64_t per=(tag==2||tag==5)?(uint64_t)w*h*4:(uint64_t)w*h*3/2;
+    *size=per*count; *align=4096; return 0;
 }
 static unsigned pool_init(void *g,void *mem,uint64_t size,const Preference *pref,unsigned count,unsigned mode) {
     (void)mode; uint64_t need_size,align; pool_size(&need_size,&align,pref,count);
@@ -115,6 +128,9 @@ static unsigned pool_init(void *g,void *mem,uint64_t size,const Preference *pref
     Pool *p=calloc(1,sizeof *p); if(!p)runtime_fail("codec: pool allocation");
     *p=(Pool){.guest=g,.w=(pref->words[1]&65535)+1,.h=((pref->words[1]>>16)&65535)+1,.count=count,.pixels=mem};
     memset(g,0,0x18); pthread_mutex_lock(&lock); p->next=pools;pools=p; pthread_mutex_unlock(&lock); return 0;
+}
+static unsigned pool_init_v2(void *g,void *mem,uint64_t size,const Preference *pref,unsigned count) {
+    return pool_init(g,mem,size,pref,count,0);
 }
 static void pool_fini(void *g) {
     pthread_mutex_lock(&lock); Pool **at=&pools;while(*at&&(*at)->guest!=g)at=&(*at)->next;
@@ -144,6 +160,33 @@ static unsigned read_nv12(const void *g,unsigned index,unsigned x,unsigned y,uns
     for(unsigned row=0;row<h/2;row++)memcpy((uint8_t*)uvd+row*uvp,src+(y/2+row)*p->w+x,w);
     pthread_mutex_unlock(&lock);return 0;
 }
+static inline uint8_t clamp_u8(int32_t v) { return v<0?0:(v>255?255:(uint8_t)v); }
+static unsigned read_rgba(const void *g,unsigned index,uint16_t x,uint16_t y,uint16_t w,uint16_t h,void *dst,uint64_t pitch,uint64_t size) {
+    pthread_mutex_lock(&lock);Pool *p=pool(g);
+    uint64_t row_bytes=(uint64_t)w*4;
+    if(index>=p->count||!dst||!w||!h||x>p->w||w>p->w-x||y>p->h||h>p->h-y||pitch<row_bytes||size<row_bytes||
+       (uint64_t)(h-1)>(size-row_bytes)/pitch)runtime_fail("codec: RGBA copy bounds");
+    const uint8_t *base=p->pixels+image_bytes(p)*index;
+    const uint8_t *y_plane=base,*uv_plane=base+(size_t)p->w*p->h;
+    dm_guest_write_prepare(dst,(uint64_t)(h-1)*pitch+row_bytes);
+    for(unsigned row=0;row<h;row++){
+        const uint8_t *yp=y_plane+(size_t)(y+row)*p->w+x;
+        const uint8_t *uvp=uv_plane+(size_t)((y+row)/2)*p->w+(x&~1u);
+        uint8_t *out=(uint8_t *)dst+(size_t)row*pitch;
+        for(unsigned col=0;col<w;col++){
+            unsigned uv_off=((x&1u)+col)&~1u;
+            int32_t c=(int32_t)yp[col]-16;
+            int32_t d=(int32_t)uvp[uv_off]-128;
+            int32_t e=(int32_t)uvp[uv_off+1]-128;
+            int32_t y_term=298*c+128;
+            out[4*col+0]=clamp_u8((y_term+459*e)>>8);
+            out[4*col+1]=clamp_u8((y_term-55*d-136*e)>>8);
+            out[4*col+2]=clamp_u8((y_term+541*d)>>8);
+            out[4*col+3]=255;
+        }
+    }
+    pthread_mutex_unlock(&lock);return 0;
+}
 static unsigned work_size(uint64_t *size,uint64_t *align,uint64_t flags,unsigned w,unsigned h) {
     (void)flags; dimensions(w,h); *size=4096;*align=4096;return 0;
 }
@@ -151,19 +194,30 @@ static void init_vpx(Decoder *d) {
     vpx_codec_dec_cfg_t cfg={.threads=4,.w=d->w,.h=d->h};
     if(vpx_codec_dec_init(&d->vpx,vpx_codec_vp9_dx(),&cfg,0)!=VPX_CODEC_OK)runtime_fail("codec: VP9 init");
 }
-static unsigned decoder_init(void *g,void *work,uint64_t worksize,uint64_t flags,unsigned w,unsigned h,unsigned count,unsigned input,uint64_t output) {
-    (void)work;(void)worksize;(void)flags;
-    output=(unsigned)output; /* guest stores only the low word of its stack slot */
-    dimensions(w,h);if(output!=3) {LOG("decoder input=%u output=%llu count=%u",input,(unsigned long long)output,count);runtime_fail("codec: non NV12 decoder");}
+static unsigned decoder_init_common(void *g,unsigned w,unsigned h,unsigned count,unsigned input,unsigned output,size_t obj_size) {
+    dimensions(w,h);if(output!=2&&output!=3) {LOG("decoder input=%u output=%u count=%u",input,output,count);runtime_fail("codec: non NV12/RGBA decoder");}
     pthread_once(&guest_once,guest_init);Decoder *d=calloc(1,sizeof *d);if(!d)runtime_fail("codec: decoder allocation");
     d->guest=g;d->w=w;d->h=h;pthread_cond_init(&d->changed,NULL);init_vpx(d);
-    memset(g,0,0x2a0);if(create_event((uint8_t*)g+8,1,0))runtime_fail("codec: submission event");
+    memset(g,0,obj_size);if(create_event((uint8_t*)g+8,1,0))runtime_fail("codec: submission event");
     signal_event((uint8_t*)g+8);
     pthread_mutex_lock(&lock);d->next=decoders;decoders=d;pthread_mutex_unlock(&lock);
-    LOG("VP9 %p %ux%u input=%u count=%u",g,w,h,input,count);return 0;
+    LOG("VP9 %p %ux%u input=%u output=%u count=%u",g,w,h,input,output,count);return 0;
+}
+static unsigned decoder_init(void *g,void *work,uint64_t worksize,uint64_t flags,unsigned w,unsigned h,unsigned count,unsigned input,uint64_t output) {
+    (void)work;(void)worksize;(void)flags;
+    return decoder_init_common(g,w,h,count,input,(unsigned)output,0x2a0);
 }
 static unsigned decoder_init_owned(void *g,uint64_t worksize,uint64_t flags,unsigned w,unsigned h,unsigned count,unsigned input,unsigned output) {
-    return decoder_init(g,NULL,worksize,flags,w,h,count,input,output);
+    (void)worksize;(void)flags;
+    return decoder_init_common(g,w,h,count,input,output,0x2a0);
+}
+static unsigned decoder_init_transfer(void *g,void *work,uint64_t worksize,uint64_t flags,uint16_t w,uint16_t h,unsigned count,unsigned input,uint64_t output,uint64_t output_mode) {
+    (void)work;(void)worksize;(void)flags;(void)output_mode;
+    return decoder_init_common(g,w,h,count,input,(unsigned)output,0x260);
+}
+static unsigned decoder_init_remote(void *g,uint64_t flags,uint16_t w,uint16_t h,unsigned count,unsigned input,unsigned output,unsigned output_mode) {
+    (void)flags;(void)output_mode;
+    return decoder_init_common(g,w,h,count,input,output,0x260);
 }
 static unsigned register_buffer(void *g,unsigned slot,void *pg,unsigned image) {
     pthread_mutex_lock(&lock);Decoder *d=decoder(g);Pool *p=pool(pg);
@@ -190,6 +244,7 @@ static void decoder_fini(void *g) {
     vpx_codec_destroy(&d->vpx);pthread_cond_destroy(&d->changed);free(d);pthread_mutex_unlock(&lock);destroy_event((uint8_t*)g+8);
 }
 static unsigned submission_event(void **out,void *g) {*out=(uint8_t*)g+8;return 0;}
+static void *submission_event_v2(void *g) {return (uint8_t*)g+8;}
 static int writable(Decoder *d) {
     for(unsigned n=0;n<8;n++){unsigned i=(d->write_cursor+n)%8;if(d->slots[i].registered&&!d->slots[i].ready){d->write_cursor=(i+1)%8;return (int)i;}}return -1;
 }
@@ -278,6 +333,23 @@ static unsigned properties(uint16_t *x,uint16_t *y,uint16_t *w,uint16_t *h,unsig
     s->reported=1;*x=0;*y=0;*w=d->w;*h=d->h;*color=0;*pts=s->pts;*eos=s->eos;pthread_mutex_unlock(&lock);
     runtime_core_back(&away);return 0;
 }
+static unsigned properties_v2(uint16_t *x,uint16_t *y,uint16_t *w,uint16_t *h,int64_t *pts,_Bool *eos,void *g,unsigned index) {
+    unsigned color=0;
+    return properties(x,y,w,h,&color,pts,eos,g,(uint64_t)index);
+}
+static _Bool try_wait_native_sync(const NativeSync *handle) {
+    if(!handle||(!handle->words[0]&&!handle->words[1]))return 1;
+    if(handle->words[0]!=SYNC_TAG)return 1;
+    pthread_mutex_lock(&lock);
+    _Bool ready=1;
+    for(Decoder *d=decoders;d;d=d->next)for(unsigned i=0;i<8;i++)if(d->slots[i].ticket==handle->words[1]){
+        ready=d->slots[i].ready!=0;
+        goto done;
+    }
+done:
+    pthread_mutex_unlock(&lock);
+    return ready;
+}
 static void release_buffer(void *g,unsigned index,NativeSync sync) {
     (void)sync;pthread_mutex_lock(&lock);Decoder *d=decoder(g);
     if(index>=8||!d->slots[index].acquired||d->navailable>=8)runtime_fail("codec: release slot");
@@ -293,15 +365,19 @@ void *runtime_video_codec_override(const char *name) {
         {"_ZN2nn6syncpt3sdk21RequestSyncPointEventEPNS1_18SyncPointEventTypeERKNS1_15SyncPointHandleE", sync_request},
         {"_ZN2nn6syncpt3sdk20CancelSyncPointEventEPNS1_18SyncPointEventTypeE", sync_cancel},
         {"_ZN2nn6syncpt3sdk25InitializeMultiWaitHolderEPNS_2os19MultiWaitHolderTypeEPNS1_18SyncPointEventTypeE", sync_holder},
+        {"_ZN2nn2gs17TryWaitNativeSyncERKNS0_16NativeSyncHandleE", try_wait_native_sync},
         {"_ZN2nn5codec5video10InitializeEv", initialize},
         {"_ZN2nn5codec36GetDecoderImagePoolNativeImageHandleEPKNS0_25VideoDecoderImagePoolTypeEj", native_image},
         {"_ZN2nn5codec5video8FinalizeEv", finalize},
         {"_ZN2nn5codec3sdk34MakeDecodeImagePreferenceForCompatEttNS0_24VideoDecoderOutputFormatENS0_9CodecModeE", preference_compat},
         {"_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_9CodecModeE", preference},
+        {"_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_15ImageTilingModeE", preference_v2},
         {"_ZN2nn5codec31CalculateDecoderImagePoolBufferEPmS1_RKNS0_27VideoDecoderImagePreferenceEj", pool_size},
         {"_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEjNS0_9CodecModeE", pool_init},
+        {"_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEj", pool_init_v2},
         {"_ZN2nn5codec24FinalizeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeE", pool_fini},
         {"_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEjttttPvmmS4_mm", read_nv12},
+        {"_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", read_rgba},
         {"_ZN2nn5codec30CalculateH264DecoderWorkBufferEPmS1_mtt", unsupported},
         {"_ZN2nn5codec29CalculateAv1DecoderWorkBufferEPmS1_mtt", unsupported},
         {"_ZN2nn5codec29CalculateVp8DecoderWorkBufferEPmS1_mtt", unsupported},
@@ -314,6 +390,14 @@ void *runtime_video_codec_override(const char *name) {
         {"_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE", unsupported},
         {"_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE", unsupported},
         {"_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE", decoder_init_owned},
+        {"_ZN2nn5codec37InitializeH264DecoderByTransferMemoryEPNS0_15H264DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeEPKvm", unsupported},
+        {"_ZN2nn5codec36InitializeAv1DecoderByTransferMemoryEPNS0_14Av1DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", unsupported},
+        {"_ZN2nn5codec36InitializeVp8DecoderByTransferMemoryEPNS0_14Vp8DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", unsupported},
+        {"_ZN2nn5codec36InitializeVp9DecoderByTransferMemoryEPNS0_14Vp9DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", decoder_init_transfer},
+        {"_ZN2nn5codec35InitializeH264DecoderByRemoteMemoryEPNS0_15H264DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeEPKvm", unsupported},
+        {"_ZN2nn5codec34InitializeAv1DecoderByRemoteMemoryEPNS0_14Av1DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", unsupported},
+        {"_ZN2nn5codec34InitializeVp8DecoderByRemoteMemoryEPNS0_14Vp8DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", unsupported},
+        {"_ZN2nn5codec34InitializeVp9DecoderByRemoteMemoryEPNS0_14Vp9DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", decoder_init_remote},
         {"_ZN2nn5codec19FinalizeH264DecoderEPNS0_15H264DecoderTypeE", unsupported},
         {"_ZN2nn5codec18FinalizeAv1DecoderEPNS0_14Av1DecoderTypeE", unsupported},
         {"_ZN2nn5codec18FinalizeVp8DecoderEPNS0_14Vp8DecoderTypeE", unsupported},
@@ -338,6 +422,10 @@ void *runtime_video_codec_override(const char *name) {
         {"_ZN2nn5codec33GetAv1DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Av1DecoderTypeE", unsupported},
         {"_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp8DecoderTypeE", unsupported},
         {"_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp9DecoderTypeE", submission_event},
+        {"_ZN2nn5codec34GetH264DecoderSubmissionReadyEventEPNS0_15H264DecoderTypeE", unsupported},
+        {"_ZN2nn5codec33GetAv1DecoderSubmissionReadyEventEPNS0_14Av1DecoderTypeE", unsupported},
+        {"_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPNS0_14Vp8DecoderTypeE", unsupported},
+        {"_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPNS0_14Vp9DecoderTypeE", submission_event_v2},
         {"_ZN2nn5codec28SubmitH264DecoderInputBufferEPmPNS0_15H264DecoderTypeEPKvmNS_8TimeSpanEb", unsupported},
         {"_ZN2nn5codec27SubmitAv1DecoderInputBufferEPmPNS0_14Av1DecoderTypeEPKvmNS_8TimeSpanEb", unsupported},
         {"_ZN2nn5codec27SubmitVp8DecoderInputBufferEPmPNS0_14Vp8DecoderTypeEPKvmNS_8TimeSpanEb", unsupported},
@@ -354,6 +442,10 @@ void *runtime_video_codec_override(const char *name) {
         {"_ZN2nn5codec35GetAv1DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_5movie10ColorSpaceEPNS_8TimeSpanEPbPNS0_14Av1DecoderTypeEj", unsupported},
         {"_ZN2nn5codec35GetVp8DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_5movie10ColorSpaceEPNS_8TimeSpanEPbPNS0_14Vp8DecoderTypeEj", unsupported},
         {"_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_5movie10ColorSpaceEPNS_8TimeSpanEPbPNS0_14Vp9DecoderTypeEj", properties},
+        {"_ZN2nn5codec36GetH264DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_15H264DecoderTypeEj", unsupported},
+        {"_ZN2nn5codec35GetAv1DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Av1DecoderTypeEj", unsupported},
+        {"_ZN2nn5codec35GetVp8DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp8DecoderTypeEj", unsupported},
+        {"_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp9DecoderTypeEj", properties_v2},
     };
     for(size_t i=0;i<sizeof map/sizeof *map;i++)if(!strcmp(name,map[i].name))return map[i].fn;
     return NULL;

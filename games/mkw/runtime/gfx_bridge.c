@@ -96,5 +96,7 @@ __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry init_entry
    checks that graphics were initialized, which here is InitializeGraphics having run. */
 static void graphics_init_check(void){if(!g_t0_ns)runtime_fail("nv::InitCheck before nv::InitializeGraphics");}
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry init_check_entry={"_ZN2nv9InitCheckEv",graphics_init_check,"graphics initialized check"};
+static void gs_init_check(const char *tag, size_t len) { (void)tag; (void)len; if (!g_t0_ns) runtime_fail("nn::gs::sdk::CheckGraphicsSystemInitialized before nv::InitializeGraphics"); }
+__attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry gs_init_check_entry={"_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm",gs_init_check,"graphics system initialized check"};
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry alloc_entry={"_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_",graphics_allocator,"game allocator callbacks"};
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry dev_alloc_entry={"_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_",graphics_dev_allocator,"game diagnostic allocator callbacks"};

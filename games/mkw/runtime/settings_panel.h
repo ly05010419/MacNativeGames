@@ -227,7 +227,19 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    nw==2560&&nh==1440?settings_text("2K（2560×1440）","2K (2560×1440)"):
    [NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","Native %u×%u")),nw,nh]];
   [resModes addObject:@(m)];}
- if(res.count<2)[rows addObject:settings_fixed(settings_text("分辨率","Resolution"),@"1080p")];
+ if(res.count<2){
+#ifdef GAME_MKW
+  if(runtime_operation_mode_locked())
+   [rows addObject:settings_fixed(settings_text("分辨率","Resolution"),
+    runtime_handheld_mode()?settings_text("1080p（1920×1080 掌机模式）","1080p (1920×1080 Handheld)"):settings_text("2K（2560×1440 主机模式）","2K (2560×1440 Docked)"))];
+  else
+   [rows addObject:settings_row(settings_text("分辨率（下次启动生效）","Resolution (from the next launch)"),
+    @[settings_text("2K（2560×1440 主机模式）","2K (2560×1440 Docked)"),settings_text("1080p（1920×1080 掌机模式）","1080p (1920×1080 Handheld)")],
+    @[@0,@1],^int{return runtime_operation_mode_choice();},^(int v){runtime_operation_mode_choose(v);})];
+#else
+  [rows addObject:settings_fixed(settings_text("分辨率","Resolution"),@"1080p")];
+#endif
+ }
  else [rows addObject:settings_row(settings_text("分辨率","Resolution"),res,resModes,
   ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
  if(!(runtime_aspect_ratio()>0))[rows addObject:settings_fixed(settings_text("画面比例","Aspect ratio"),@"16:9")];

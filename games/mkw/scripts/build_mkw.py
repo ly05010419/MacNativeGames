@@ -171,10 +171,29 @@ def git_fetch(url, commit, dst, log):
 
 
 # ---- 1. inputs, the work tree and the Python environment ----
+def is_nup(game):
+    with game.open('rb') as f:
+        return f.read(4) == b'NUP\x01'
+
+
 def check_game(game):
     with game.open('rb') as f:
-        if f.read(4) != b'PFS0':
-            raise BuildError(f'{game}: expected the game NSP (PFS0)')
+        magic = f.read(4)
+    if magic not in (b'PFS0', b'NUP\x01'):
+        raise BuildError(f'{game}: expected the game NSP (PFS0) or NUP')
+
+
+def outside_links(folder, skip):
+    """Files in folder (relative paths) that are symlinks to targets outside folder."""
+    inside, found = folder.resolve(), []
+    for root, dirs, files in os.walk(folder):
+        if Path(root) == folder:
+            dirs[:] = [d for d in dirs if d not in skip]
+        for name in files:
+            path = Path(root) / name
+            if path.is_symlink() and path.is_file() and not path.resolve().is_relative_to(inside):
+                found.append(path.relative_to(folder))
+    return found
 
 
 def prepare_work(work, python, logs):
@@ -182,9 +201,17 @@ def prepare_work(work, python, logs):
     the time of this copy, so make rebuilds what changed even when the checkout is older than the last build's objects."""
     tree = work / 'mkw'
     tree.mkdir(parents=True, exist_ok=True)
-    excludes = [f'--exclude=/{name}' for name in ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'MKW_build')]
+    skip = ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'MKW_build')
+    links = outside_links(GAME_DIR, skip)
+    excludes = [f'--exclude=/{name}' for name in (*skip, *links)]
     run(['rsync', '-rlpD', '--checksum', '--exclude=__pycache__', '--exclude=*.app/', *excludes, f'{GAME_DIR}/', f'{tree}/'],
         logs / 'sources.log')
+    for rel in links:
+        data, out = (GAME_DIR / rel).read_bytes(), tree / rel
+        if out.is_symlink() or not out.is_file() or out.read_bytes() != data:
+            out.unlink(missing_ok=True)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(data)
     venv = work / 'venv'
     if not (venv / 'bin/python').exists():
         say('1. Python environment for the build tools')
@@ -211,9 +238,62 @@ def romfs_valid(romfs, game):
         return False
 
 
+def step_code_nup(tree, game, logs):
+    """Import a NUP package into extracted/mkw (exefs + packed 16-byte-aligned romfs.bin) and return (image, version, romfs_sha256)."""
+    py = tree / '.venv/bin/python'
+    extracted = tree / f'extracted/{VERSION}'
+    exefs, romfs = extracted / 'exefs', extracted / 'romfs'
+    image = romfs / 'romfs.bin'
+    say('2. code and data: importing the ExeFS and packing verified RomFS from the NUP (a few minutes: 23 GB)')
+    run([py, 'scripts/import_nup.py', game, '--output', extracted], logs / 'import-nup.log', cwd=tree)
+    manifest = json.loads((extracted / 'extraction-manifest.json').read_text())
+    index = json.loads((romfs / 'index.json').read_text())
+    (romfs / 'romfs.source').write_text(f'0 {image}\n')
+    return image, int(manifest['content_version']), index['romfs_sha256']
+
+
 def step_code(tree, game, logs, dump=None):
     py = tree / '.venv/bin/python'
     exefs, romfs = tree / f'extracted/{VERSION}/exefs', tree / f'extracted/{VERSION}/romfs'
+    if game is not None and is_nup(game):
+        image, content_version, romfs_sha256 = step_code_nup(tree, game, logs)
+        manifest = json.loads((tree / f'extracted/{VERSION}/extraction-manifest.json').read_text())
+        want = {item['name']: item['sha256'] for item in manifest['files']}
+        modules = ['main', *(f'subsdk{i}' for i in range(10) if (exefs / f'subsdk{i}').is_file()), 'sdk']
+        for n in (*modules, 'main.npdm', 'rtld'):
+            if not (exefs / n).is_file():
+                raise BuildError(f'ExeFS {n} is missing in NUP')
+            if n in want:
+                check(f'ExeFS {n}', sha256(exefs / n), want[n])
+        if not all((tree / f'extracted/{VERSION}/elf/{m}-inventory.json').exists() for m in modules):
+            run([py, 'scripts/prepare_modules.py', exefs, '--output', tree / f'extracted/{VERSION}/elf'], logs / 'prepare-modules.log', cwd=tree)
+        out = tree / f'rewritten/{VERSION}'
+        out.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, DM_RULESET='native', DM_PRIVATE_GATES='0')
+        rewritten_hashes = {}
+        for name in sorted(modules, key=lambda n: n == 'main'):   # main last: the big one
+            patched, fixups = out / f'{name}.patched.bin', out / f'{name}.fixups.tsv'
+            reused = False
+            if patched.is_file() and fixups.is_file():
+                ck = subprocess.run([py, 'third_party/d2r/structck.py', out, name, exefs / name],
+                                    cwd=tree, env=env, capture_output=True)
+                reused = (ck.returncode == 0)
+            if not reused:
+                say(f'2. code: rewriting {name} for the Mac' + (' (the big one: a few minutes)' if name == 'main' else ''))
+                run([py, 'third_party/d2r/patch_nso.py', exefs / name, out, name], logs / f'rewrite-{name}.log', cwd=tree, env=env)
+                run([py, 'third_party/d2r/structck.py', out, name, exefs / name], logs / f'structck-{name}.log', cwd=tree, env=env)
+            rewritten_hashes[f'rewritten/{VERSION}/{name}.patched.bin'] = sha256(patched)
+        report = dict(
+            format=1, status='pass', rom_version=VERSION, scope=f'NUP import + structck verification (v{content_version})',
+            module_file_sha256={**{f'extracted/{VERSION}/exefs/{n}': sha256(exefs / n) for n in modules},
+                                **rewritten_hashes})
+        path = tree / f'analysis/{VERSION}-port/phase12-validation.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(report, indent=2) + '\n'
+        if not path.is_file() or path.read_text() != text:
+            path.write_text(text)
+        return image, modules, f'v{content_version}', romfs_sha256
+
     want = EXPECTED['exefs_sha256']
     exefs_ok = all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in want.items())
     if dump:
@@ -250,7 +330,7 @@ def step_code(tree, game, logs, dump=None):
     text = json.dumps(report, indent=2) + '\n'
     if not path.is_file() or path.read_text() != text:
         path.write_text(text)
-    return game   # with --dump: the packed RomFS image, which the app carries in place of the NSP
+    return game, list(MODULES), EXPECTED['display_version'], EXPECTED['romfs']['sha256']   # with --dump: the packed RomFS image, which the app carries in place of the NSP
 
 
 def step_code_dump(tree, dump, logs):
@@ -324,8 +404,15 @@ def step_fonts(tree, logs, keys=None, firmware=None, shared_fonts=None):
 
 
 # ---- 4. binary, game data tables, shader chain, launcher ----
-def step_binary(tree, logs, have_fonts):
+def step_binary(tree, logs, have_fonts, display_version=None):
     py = tree / '.venv/bin/python'
+    ver = display_version or EXPECTED['display_version']
+    ver_h = tree / 'build/mkw_game_version.h'
+    ver_content = f'#define TOTK_GAME_VERSION {json.dumps(ver)}\n'
+    if not ver_h.is_file() or ver_h.read_text() != ver_content:
+        ver_h.parent.mkdir(parents=True, exist_ok=True)
+        ver_h.write_text(ver_content)
+        (tree / 'build/mkw-native').unlink(missing_ok=True)
     say('4. app: the game binary')
     run(['make', f'-j{os.cpu_count() or 4}', f'VERSION={VERSION}', 'binary'], logs / 'binary.log', cwd=tree)
     say('4. app: the game data tables')
@@ -338,7 +425,7 @@ def step_binary(tree, logs, have_fonts):
         fonts_txt.write_text('')   # no system fonts: the game uses its own
     if not all((tree / p).is_file() for p in SHADER_CHAIN):
         say('4. app: the shader translation chain from pinned sources (the first time: several minutes, needs the .NET 10 SDK)')
-    run(['make', 'shader-tools'], logs / 'shader-tools.log', cwd=tree)
+    run(['make', 'shader-tools'], logs / 'shader-tools.log', cwd=tree, env=dict(os.environ, MNG_REPO=str(GAME_DIR.parents[1])))
     for p in SHADER_CHAIN:
         if not os.access(tree / p, os.X_OK):
             raise BuildError(f'{p} was not built (see {logs / "shader-tools.log"})')
@@ -348,14 +435,16 @@ def step_binary(tree, logs, have_fonts):
 
 
 # ---- 5. the app ----
-def data_bundle(tree, game, logs):
+def data_bundle(tree, game, logs, *, romfs_sha256=None, display_version=None):
     """The game's NSP as a bundle of its own, signed once and kept in the work folder (build/data-bundles): the app
     carries a clone of it in Contents/Helpers and its seal records only the bundle's signature, so a packaging does not
     hash 23 GB again. The runtime reads the RomFS in place from it (romfs.source) and checks it itself."""
     bundle = tree / 'build/data-bundles/GameData-mkw.bundle'
     stamp = bundle.with_name(bundle.name + '.json')
     st = game.stat()
-    want = dict(format=1, size=st.st_size, mtime_ns=st.st_mtime_ns, romfs_sha256=EXPECTED['romfs']['sha256'])
+    want = dict(format=1, size=st.st_size, mtime_ns=st.st_mtime_ns,
+                romfs_sha256=romfs_sha256 or EXPECTED['romfs']['sha256'],
+                display_version=display_version or EXPECTED['display_version'])
     try:
         if (bundle / 'Contents/_CodeSignature/CodeResources').is_file() and json.loads(stamp.read_text()) == want:
             return bundle
@@ -368,7 +457,7 @@ def data_bundle(tree, game, logs):
     clone(game, tmp / 'Contents/Resources/game.nsp')
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleIdentifier=f'{BUNDLE_ID}.data', CFBundleName='Game data', CFBundlePackageType='BNDL',
-        CFBundleShortVersionString=EXPECTED['display_version'], CFBundleVersion='1')))
+        CFBundleShortVersionString=display_version or EXPECTED['display_version'], CFBundleVersion='1')))
     run(['codesign', '--force', '--sign', '-', tmp], logs / 'sign-data.log')
     run(['codesign', '--verify', '--strict', tmp], logs / 'verify-data.log')
     stamp.unlink(missing_ok=True)
@@ -441,7 +530,7 @@ def install_app(new, out):
     return kept
 
 
-def step_app(tree, game, out, logs, have_fonts):
+def step_app(tree, game, out, logs, have_fonts, *, modules=MODULES, display_version=None, romfs_sha256=None):
     tmp = out.with_name(out.name + '.partial')
     if tmp.exists():
         remove_tree(tmp)
@@ -449,7 +538,7 @@ def step_app(tree, game, out, logs, have_fonts):
     clone(tree / 'build/mkw-native', res / 'build/totk-native')
     files = ['build/shader-tools.json', 'build/spirv-cross/spirv-cross', f'extracted/{VERSION}/romfs/runtime-index.bin', f'extracted/{VERSION}/romfs/index.json',
              'tools/wrap_mesh_stage.py', 'tools/dmsh_meshstage.py', 'tools/prepare_ampere_jobs.py']   # the mesh-stage wrapper and its imports
-    files += [f'rewritten/{VERSION}/{m}.patched.bin' for m in MODULES]
+    files += [f'rewritten/{VERSION}/{m}.patched.bin' for m in modules]
     files += [f'build/game-data/{VERSION}/{name}' for name in ('runtime-tables.bin', 'rewriter.txt', 'romfs-config.txt', 'shared-fonts.txt')]
     for rel in files:
         clone(tree / rel, res / rel)
@@ -457,7 +546,7 @@ def step_app(tree, game, out, logs, have_fonts):
         copy_tree(tree / d, res / d)
     if have_fonts:
         copy_tree(tree / 'extracted/firmware/shared-fonts', res / 'extracted/firmware/shared-fonts')
-    bundle = data_bundle(tree, game, logs)   # after the copies above: signing it is slow
+    bundle = data_bundle(tree, game, logs, romfs_sha256=romfs_sha256, display_version=display_version)   # after the copies above: signing it is slow
     copy_tree(bundle, tmp / 'Contents/Helpers' / bundle.name)
     romfs_dir = res / f'extracted/{VERSION}/romfs'
     offset = (tree / f'extracted/{VERSION}/romfs/romfs.source').read_text().split(' ', 1)[0]
@@ -465,7 +554,8 @@ def step_app(tree, game, out, logs, have_fonts):
     (romfs_dir / 'romfs.source').write_text(f'{offset} {rel}\n')   # runtime/romfs.c: relative to the RomFS folder
     clone(tree / 'build/app-launcher', tmp / f'Contents/MacOS/{EXECUTABLE}')
     info = dict(CFBundleDevelopmentRegion='en', CFBundleExecutable=EXECUTABLE, CFBundleIdentifier=BUNDLE_ID, CFBundleName=APP_NAME,
-                CFBundleDisplayName=APP_NAME, CFBundlePackageType='APPL', CFBundleShortVersionString=EXPECTED['display_version'],
+                CFBundleDisplayName=APP_NAME, CFBundlePackageType='APPL',
+                CFBundleShortVersionString=display_version or EXPECTED['display_version'],
                 CFBundleVersion='1', LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
                 LSApplicationCategoryType='public.app-category.racing-games', LSSupportsGameMode=True,
                 GCSupportsControllerUserInteraction=True)
@@ -523,21 +613,22 @@ def main(argv):
     pinned_deps(*DEPS)
     work.mkdir(parents=True, exist_ok=True)
     out.parent.mkdir(parents=True, exist_ok=True)
-    data_dev = os.stat(work).st_dev if dump else os.stat(game).st_dev   # --dump: the image is packed into the work folder
+    nup_source = bool(game and is_nup(game))
+    data_dev = os.stat(work).st_dev if (dump or nup_source) else os.stat(game).st_dev   # --dump / .nup: the image is packed into the work folder
     if os.stat(work).st_dev != data_dev or os.stat(out.parent).st_dev != data_dev:
         raise BuildError('the work folder and the app must be on the same volume as the game data (the app clones the 23 GB image)')
     logs = work / 'logs/build'
-    need = 30 if dump and not (work / f'mkw/extracted/{VERSION}/romfs/romfs.bin').is_file() else 6
+    need = 30 if (dump or nup_source) and not (work / f'mkw/extracted/{VERSION}/romfs/romfs.bin').is_file() else 6
     if shutil.disk_usage(work).free / 2**30 < need:
-        raise BuildError(f'needs about {need} GB free for the work folder' + (' (the packed RomFS image is 23 GB)' if dump else ' (the NSP itself is cloned, not copied)'))
-    say(f'{APP_NAME} {EXPECTED["display_version"]}; work folder {work}')
+        raise BuildError(f'needs about {need} GB free for the work folder' + (' (the packed RomFS image is 23 GB)' if (dump or nup_source) else ' (the NSP itself is cloned, not copied)'))
+    say(f'{APP_NAME} ({ "NUP" if nup_source else EXPECTED["display_version"] }); work folder {work}')
     tree = prepare_work(work, sys.executable, logs)
-    game = step_code(tree, game, logs, dump=dump)
+    game, modules, display_version, romfs_sha256 = step_code(tree, game, logs, dump=dump)
     have_fonts = step_fonts(tree, logs, keys=keys, firmware=a.firmware and a.firmware.expanduser().resolve(),
                             shared_fonts=a.shared_fonts and a.shared_fonts.expanduser().resolve())
-    step_binary(tree, logs, have_fonts)
+    step_binary(tree, logs, have_fonts, display_version=display_version)
     say(f'5. app: assembling {out}')
-    step_app(tree, game, out, logs, have_fonts)
+    step_app(tree, game, out, logs, have_fonts, modules=modules, display_version=display_version, romfs_sha256=romfs_sha256)
     run([LSREGISTER, '-f', out], logs / 'register-app.log')
     say('5. app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
     r = subprocess.run([out / f'Contents/MacOS/{EXECUTABLE}', '--check'], capture_output=True, text=True, timeout=1800)

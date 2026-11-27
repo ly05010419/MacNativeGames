@@ -30,10 +30,10 @@ static void need(bool c,const char *m) { if(!c) runtime_fail(m); }
    verified rewrites: runtime-tables.bin in the game data folder (game_data.h), mapped at start. Nothing of them is compiled
    in, so this program can be replaced in an app on its own. Every count and offset is checked before use; each module's
    SHA-256 in the file binds it to its image as before (map_module). */
-/* Mario Kart World ships main, subsdk0 and sdk (prepare_runtime.py writes the modules a title has, main first and sdk last). */
-#define NM 3
-static const char *const module_names[NM]={"main","subsdk0","sdk"};
-static Module modules[NM];
+/* Mario Kart World ships main, subsdk0..N and sdk (prepare_runtime.py writes the modules a title has, main first and sdk last). */
+enum { MAX_NM = 8 };
+static unsigned nm;
+static Module modules[MAX_NM];
 static uint64_t probe_plt,probe_slot;   /* main's original PLT stub of nn::os::GetSystemTick and its GOT slot (probe) */
 #define PROBE_PLT probe_plt
 #define PROBE_SLOT probe_slot
@@ -52,11 +52,13 @@ static void load_tables(void) {
  const TablesHeader *h=(const void *)b;uint64_t size=(uint64_t)st.st_size;
  need(!memcmp(h->magic,"TOTKTAB1",8)&&h->format==1&&h->size==size,"game tables format");
  if(strncmp(h->version,TOTK_GAME_DIR,sizeof h->version)){fprintf(stderr,"[totk] game tables are for %.8s, this program for " TOTK_GAME_DIR "\n",h->version);runtime_fail("game tables of another game version");}
- need(h->nmodule==NM&&tables_range(size,sizeof *h,NM,sizeof(TablesModule))&&h->strings_size>0&&tables_range(size,h->strings,h->strings_size,1)&&!b[h->strings+h->strings_size-1],"game tables layout");
+ need(h->nmodule>=2&&h->nmodule<=MAX_NM&&tables_range(size,sizeof *h,h->nmodule,sizeof(TablesModule))&&h->strings_size>0&&tables_range(size,h->strings,h->strings_size,1)&&!b[h->strings+h->strings_size-1],"game tables layout");
+ nm=h->nmodule;
  const char *strings=(const char *)b+h->strings;
- for(unsigned i=0;i<NM;i++){
+ for(unsigned i=0;i<nm;i++){
   const TablesModule *t=(const TablesModule *)(b+sizeof *h)+i;Module *m=&modules[i];
-  need(!t->name[sizeof t->name-1]&&!strcmp(t->name,module_names[i])&&strnlen(t->digest,sizeof t->digest)==64,"game tables module");
+  int name_ok=!t->name[sizeof t->name-1]&&(i==0?!strcmp(t->name,"main"):i+1==nm?!strcmp(t->name,"sdk"):!strncmp(t->name,"subsdk",6));
+  need(name_ok&&strnlen(t->digest,sizeof t->digest)==64,"game tables module");
   need(tables_range(size,t->symbols,t->nsym,sizeof(TablesSymbol))&&tables_range(size,t->relocs,t->nreloc,sizeof(Reloc))&&tables_range(size,t->gates,t->ngate,sizeof(Gate)),"game tables bounds");
   *m=(Module){.name=t->name,.digest=t->digest,.file_size=t->file_size,.text_end=t->text_end,.ro_off=t->ro_off,.data_off=t->data_off,.patch_off=t->patch_off,.key_off=t->key_off,
    .init=t->init,.ctor_flag=t->ctor_flag,.init_array=t->init_array,.init_size=t->init_size,.nsym=t->nsym,.relocs=(const Reloc *)(b+t->relocs),.nreloc=t->nreloc,
@@ -73,7 +75,7 @@ static void load_tables(void) {
   m->gates=gates;
  }
  probe_plt=h->probe_plt;probe_slot=h->probe_slot;
- fprintf(stderr,"[totk] game tables %s:",path);for(unsigned i=0;i<NM;i++)fprintf(stderr,"%s%u",i?"+":" ",modules[i].nreloc);fprintf(stderr," relocations\n");
+ fprintf(stderr,"[totk] game tables %s:",path);for(unsigned i=0;i<nm;i++)fprintf(stderr,"%s%u",i?"+":" ",modules[i].nreloc);fprintf(stderr," relocations\n");
 }
 static size_t page_up(size_t x) { return (x+0x3fff)&~(size_t)0x3fff; }
 static unsigned hash_name(const char *s) { unsigned h=2166136261u; for(;*s;s++)h=(h^(uint8_t)*s)*16777619u;return h; }
@@ -96,19 +98,19 @@ static void *module_symbol(Module *m,const char *name) {
  return NULL;
 }
 void *runtime_symbol(const char *name) {
- for(unsigned i=0;i<NM;i++){void *p=module_symbol(&modules[i],name);if(p)return p;}
+ for(unsigned i=0;i<nm;i++){void *p=module_symbol(&modules[i],name);if(p)return p;}
  return NULL;
 }
-uint8_t *runtime_module_base(const char *name){for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,name))return modules[i].base;return NULL;}
+uint8_t *runtime_module_base(const char *name){for(unsigned i=0;i<nm;i++)if(!strcmp(modules[i].name,name))return modules[i].base;return NULL;}
 /* Is pc in a module's original code (not in the patch area, where rewritten windows and gates are)? Called from a signal
    handler (threads.c, asynchronous preemption, both games): only reads the module table. */
-int runtime_guest_code_pc(uint64_t pc){for(unsigned i=0;i<NM;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
+int runtime_guest_code_pc(uint64_t pc){for(unsigned i=0;i<nm;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
 /* RELRO in newer SDKs protects relocated data after linking. Keep permissions at
  * the guest's 4 KiB granularity. A Darwin 16 KiB page receives the union of its
  * four guest permissions, so protecting an edge never removes access from an
  * adjacent writable object. Whole interior pages are actually made read-only. */
 static pthread_mutex_t module_permission_lock=PTHREAD_MUTEX_INITIALIZER;
-static unsigned char *module_permissions[NM];
+static unsigned char *module_permissions[MAX_NM];
 static unsigned module_page_permission(unsigned i,uint64_t off){
  Module *m=&modules[i];
  if(off<m->data_off)return off<page_up(m->text_end)?5:1;
@@ -119,7 +121,7 @@ uint64_t runtime_module_permission(uint64_t address,uint64_t size,unsigned permi
  if(address&4095)return 0xcc01;
  if(!size||(size&4095))return 0xca01;
  if(permission!=0&&permission!=1&&permission!=3)return 0xd801;
- for(unsigned i=0;i<NM;i++){
+ for(unsigned i=0;i<nm;i++){
   Module *m=&modules[i];uint64_t base=(uintptr_t)m->base;
   if(address<base||address-base<m->data_off||address-base>=m->key_off||size>m->key_off-(address-base))continue;
   uint64_t off=address-base;
@@ -145,7 +147,7 @@ uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned 
  if(!size||(size&4095))return 0xca01;
  /* The only module attribute used by the SDK is the irreversible RELRO lock. */
  if(mask!=16||attribute!=16)return 0xd801;
- for(unsigned i=0;i<NM;i++){
+ for(unsigned i=0;i<nm;i++){
   Module *m=&modules[i];uint64_t start=(uintptr_t)m->base;
   if(address<start||address-start<m->data_off||address-start>=m->key_off||size>m->key_off-(address-start))continue;
   pthread_mutex_lock(&module_permission_lock);
@@ -157,7 +159,7 @@ uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned 
  return 0xd401;
 }
 int runtime_module_query(uint64_t address,uint64_t *base,uint64_t *size,unsigned *state,unsigned *permission,unsigned *attribute){
- for(unsigned i=0;i<NM;i++){
+ for(unsigned i=0;i<nm;i++){
   Module *m=&modules[i];uint64_t start=(uintptr_t)m->base;
   if(address<start||address-start>=m->key_off)continue;
   uint64_t off=(address-start)&~4095ULL,lo=off,hi=off+4096;
@@ -171,12 +173,12 @@ int runtime_module_query(uint64_t address,uint64_t *base,uint64_t *size,unsigned
  }
  return 0;
 }
-void runtime_describe_address(uint64_t a,char *out,size_t n){for(unsigned i=0;i<NM;i++)if(a>=(uintptr_t)modules[i].base&&a<(uintptr_t)modules[i].base+modules[i].size){snprintf(out,n,"%s+0x%llx",modules[i].name,(unsigned long long)(a-(uintptr_t)modules[i].base));return;}Dl_info di;if(dladdr((void *)(uintptr_t)a,&di)&&di.dli_sname){snprintf(out,n,"%s+0x%llx",di.dli_sname,(unsigned long long)(a-(uintptr_t)di.dli_saddr));return;}snprintf(out,n,"0x%llx",(unsigned long long)a);}
+void runtime_describe_address(uint64_t a,char *out,size_t n){for(unsigned i=0;i<nm;i++)if(a>=(uintptr_t)modules[i].base&&a<(uintptr_t)modules[i].base+modules[i].size){snprintf(out,n,"%s+0x%llx",modules[i].name,(unsigned long long)(a-(uintptr_t)modules[i].base));return;}Dl_info di;if(dladdr((void *)(uintptr_t)a,&di)&&di.dli_sname){snprintf(out,n,"%s+0x%llx",di.dli_sname,(unsigned long long)(a-(uintptr_t)di.dli_saddr));return;}snprintf(out,n,"0x%llx",(unsigned long long)a);}
 /* Guest frame-pointer chain. Guest threads run on guest stacks (not the host pthread stack), so frames are read with
    mach_vm_read_overwrite (a bad pointer ends the walk instead of faulting); the chain must grow upwards. */
 void runtime_trace_guest(uint64_t fp,uint64_t lr) {
  for(unsigned n=0;n<16;n++) {
-  for(unsigned i=0;i<NM;i++)if(lr>=(uintptr_t)modules[i].base&&lr<(uintptr_t)modules[i].base+modules[i].size)fprintf(stderr,"[totk] caller %s+0x%llx\n",modules[i].name,(unsigned long long)(lr-(uintptr_t)modules[i].base));
+  for(unsigned i=0;i<nm;i++)if(lr>=(uintptr_t)modules[i].base&&lr<(uintptr_t)modules[i].base+modules[i].size)fprintf(stderr,"[totk] caller %s+0x%llx\n",modules[i].name,(unsigned long long)(lr-(uintptr_t)modules[i].base));
   if(!fp||fp%8)break;uint64_t f[2];mach_vm_size_t got=0;
   if(mach_vm_read_overwrite(mach_task_self(),fp,16,(uintptr_t)f,&got)!=KERN_SUCCESS||got!=16)break;
   lr=f[1];if(f[0]<=fp||f[0]-fp>(64u<<20))break;fp=f[0];
@@ -251,7 +253,7 @@ static void map_module(Module *m,const char *dir) {
    DATA_OFF, below PATCH_OFF), so the exported bytes differ from the verified image only at the patch sites; the counts
    are printed. */
 static void export_ios_text(const char *rewritten,const char *out) {
- for(unsigned i=0;i<NM;i++){Module *m=&modules[i];char path[4096];size_t n=page_up(m->text_end);
+ for(unsigned i=0;i<nm;i++){Module *m=&modules[i];char path[4096];size_t n=page_up(m->text_end);
   need(snprintf(path,sizeof path,"%s/%s.patched.bin",rewritten,m->name)<(int)sizeof path,"image path");
   FILE *f=fopen(path,"rb");need(f!=NULL,"open patched module");uint8_t *orig=malloc(n);need(orig&&fread(orig,1,n,f)==n,"read original text");fclose(f);
   unsigned diff=0;for(size_t k=0;k<n;k+=4)if(memcmp(orig+k,m->base+k,4))diff++;free(orig);
@@ -278,7 +280,8 @@ static void relocate(Module *m) {
    const Symbol *s=&m->symbols[r->symbol];void *p=r->kind==1026?runtime_observer(s->name):NULL;
    if(!p)p=runtime_override(s->name);
    if(p)p=runtime_hle_wrap_named(p,s->name);   /* host replacements run on the thread's host stack */
-   if(!p)p=s->defined?(s->value<m->key_off?m->base+s->value:NULL):runtime_symbol(s->name);
+   /* Weak symbols (e.g. SDK's operator new/delete) must interpose to earlier module definitions (main's allocator). */
+   if(!p)p=s->defined&&s->binding!=2?(s->value<m->key_off?m->base+s->value:NULL):runtime_symbol(s->name);
    if(!p&&s->binding!=2){fprintf(stderr,"%s unresolved %s\n",m->name,s->name);runtime_fail("strong import unresolved");}
    if(!p)m->weak++;
    if(p&&!s->defined)m->cross++;
@@ -289,7 +292,7 @@ static void relocate(Module *m) {
 }
 static void verify_identity(int negative) {
  unsigned checked=0;void *original=required("nnMain");
- for(unsigned i=0;i<NM;i++)for(unsigned j=0;j<modules[i].nreloc;j++) {
+ for(unsigned i=0;i<nm;i++)for(unsigned j=0;j<modules[i].nreloc;j++) {
   Module *m=&modules[i];const Reloc *r=&m->relocs[j];
   if(r->kind==1027||r->kind==1026||strcmp(m->symbols[r->symbol].name,"nnMain"))continue;
   uintptr_t actual;memcpy(&actual,m->base+r->where,8);
@@ -355,7 +358,7 @@ static void thread_cleanup(void) {
 }
 uint64_t runtime_now_ns(void) {mach_timebase_info_data_t tb;mach_timebase_info(&tb);return (uint64_t)((__uint128_t)mach_absolute_time()*tb.numer/tb.denom);}
 void runtime_dispatch(uint64_t ret,uint64_t *regs) {
- for(unsigned i=0;i<NM;i++) {
+ for(unsigned i=0;i<nm;i++) {
   uintptr_t b=(uintptr_t)modules[i].base;if(!b||ret<b)continue;
   unsigned lo=0,hi=modules[i].ngate;   // gates sorted by return address (prepare_runtime.py)
   while(lo<hi){unsigned m=(lo+hi)/2;if(b+modules[i].gates[m].ret<ret)lo=m+1;else hi=m;}
@@ -468,9 +471,9 @@ static void crash(int num,siginfo_t *info,void *context) {
     and the live pc of the ones running), to see a job running into data another thread is rebuilding. Once per process. */
  {static int dumped;if(getenv("TOTK_CRASH_THREADS")&&!__atomic_fetch_add(&dumped,1,__ATOMIC_SEQ_CST)){extern void runtime_dump_threads(void);runtime_dump_threads();}}
 #endif
- for(unsigned i=0;i<NM;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){write(2,modules[i].name,strlen(modules[i].name));signal_hex(" offset=",pc-(uintptr_t)modules[i].base);}
+ for(unsigned i=0;i<nm;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){write(2,modules[i].name,strlen(modules[i].name));signal_hex(" offset=",pc-(uintptr_t)modules[i].base);}
  for(unsigned i=0;i<29;i++)signal_hex("x=",u->uc_mcontext->__ss.__x[i]);signal_hex("sp=",u->uc_mcontext->__ss.__sp);
- for(unsigned depth=0;depth<24&&fp&&!(fp&15);depth++){uint64_t frame[2];mach_vm_size_t got=0;if(mach_vm_read_overwrite(mach_task_self(),fp,16,(uintptr_t)frame,&got)!=KERN_SUCCESS||got!=16)break;signal_hex("frame lr=",frame[1]);for(unsigned i=0;i<NM;i++)if(frame[1]>=(uintptr_t)modules[i].base&&frame[1]<(uintptr_t)modules[i].base+modules[i].size){write(2,modules[i].name,strlen(modules[i].name));signal_hex(" offset=",frame[1]-(uintptr_t)modules[i].base);}if(frame[0]==fp)break;fp=frame[0];   /* host-stack switch: frames may move between stacks */}
+ for(unsigned depth=0;depth<24&&fp&&!(fp&15);depth++){uint64_t frame[2];mach_vm_size_t got=0;if(mach_vm_read_overwrite(mach_task_self(),fp,16,(uintptr_t)frame,&got)!=KERN_SUCCESS||got!=16)break;signal_hex("frame lr=",frame[1]);for(unsigned i=0;i<nm;i++)if(frame[1]>=(uintptr_t)modules[i].base&&frame[1]<(uintptr_t)modules[i].base+modules[i].size){write(2,modules[i].name,strlen(modules[i].name));signal_hex(" offset=",frame[1]-(uintptr_t)modules[i].base);}if(frame[0]==fp)break;fp=frame[0];   /* host-stack switch: frames may move between stacks */}
  /* TOTK_CRASH_MEM=<reg>[:<signed offset>[:<bytes>]]: dump words at register+offset; TOTK_CRASH_MEM_FOLLOW=k1,k2,...: for each
     listed word index, dump 0x100 bytes at that pointer and the ASCII of every readable pointer inside it (data-structure faults). */
  {const char *e=getenv("TOTK_CRASH_MEM");if(e){unsigned r=(unsigned)strtoul(e,NULL,0);const char *c=strchr(e,':');int64_t off=c?strtoll(c+1,NULL,0):0;const char *c2=c?strchr(c+1,':'):NULL;
@@ -527,11 +530,11 @@ static void probe(void) {
  pthread_t threads[4];for(unsigned i=0;i<4;i++)need(pthread_create(&threads[i],NULL,probe_thread,NULL)==0,"probe thread");
  for(unsigned i=0;i<4;i++)need(pthread_join(threads[i],NULL)==0,"join probe");need(timer_calls==4000,"timer gate count");
  printf("{\"status\":\"pass\",\"execution\":\"native arm64 main PLT -> sdk -> host timer -> return\",\"calls\":4000,\"threads\":4,\"modules\":[");
- for(unsigned i=0;i<NM;i++){Module *m=&modules[i];printf("%s{\"name\":\"%s\",\"relative\":%u,\"symbolic\":%u,\"cross\":%u,\"weak_zero\":%u}",i?",":"",m->name,m->relative,m->symbolic,m->cross,m->weak);}
+ for(unsigned i=0;i<nm;i++){Module *m=&modules[i];printf("%s{\"name\":\"%s\",\"relative\":%u,\"symbolic\":%u,\"cross\":%u,\"weak_zero\":%u}",i?",":"",m->name,m->relative,m->symbolic,m->cross,m->weak);}
  puts("],\"scope\":\"cross-module calls; constructors and game entry not run\"}");
 }
 int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
- for(unsigned i=0;i<NM;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){*name=modules[i].name;*off=pc-(uintptr_t)modules[i].base;return 1;}
+ for(unsigned i=0;i<nm;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){*name=modules[i].name;*off=pc-(uintptr_t)modules[i].base;return 1;}
  return 0;
 }
 uintptr_t runtime_frame_controller_return_pc(void) {
@@ -548,17 +551,17 @@ uintptr_t runtime_frame_controller_return_pc(void) {
  return (uintptr_t)modules[0].base + GAME_ADDR(0x8f6cbc);
 #endif
 }
-uint64_t runtime_image_bytes(void) { uint64_t total=0;for(unsigned i=0;i<NM;i++)total+=modules[i].key_off;return page_up(total); }
+uint64_t runtime_image_bytes(void) { uint64_t total=0;for(unsigned i=0;i<nm;i++)total+=modules[i].key_off;return page_up(total); }
 static void loader_ready(void) { fprintf(stderr,"[totk] rtld callback: modules linked\n"); }
 static void module_inits(void) {
  fprintf(stderr,"[totk] SDK startup returned; running module constructors\n");
- for(unsigned i=0;i<NM;i++){char detail[128];snprintf(detail,sizeof detail,TOTK_UI("运行 %s 游戏模块初始化代码（%u/%u）","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)NM);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[totk] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"DT_INIT deferred or skipped constructors");
+ for(unsigned i=0;i<nm;i++){char detail[128];snprintf(detail,sizeof detail,TOTK_UI("运行 %s 游戏模块初始化代码（%u/%u）","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)nm);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[totk] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"DT_INIT deferred or skipped constructors");
  fprintf(stderr,"[totk] RETURN %s DT_INIT state=%u init_array_count=%llu\n",modules[i].name,state,(unsigned long long)(modules[i].init_size/8));}
 }
 void runtime_startup_checkpoint(uintptr_t caller) {
  if(!getenv("TOTK_VERIFY_STARTUP"))return;
  need(caller==(uintptr_t)modules[0].base+GAME_ADDR(0xe995c4),"checkpoint not reached from original nnMain");
- for(unsigned i=0;i<NM;i++){uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"constructor checkpoint state");}
+ for(unsigned i=0;i<nm;i++){uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"constructor checkpoint state");}
  printf("{\"status\":\"pass\",\"phase\":4,\"original_nnMain_return_pc\":\"0x%x\",\"scope\":\"all DT_INIT constructor loops completed; original nnMain prefix executed; stops at focus setup\"}\n", GAME_ADDR(0xe995c4));fflush(stdout);_exit(0);
 }
 #ifndef GAME_BOTW160
@@ -610,14 +613,14 @@ int main(int argc,char **argv) {
  runtime_hle_stack_init((uint64_t)runtime_keys[4]*8);
  need(pthread_key_create(&environment_key,environment_destroy)==0,"thread environment key");
  load_tables();
- for(unsigned i=0;i<NM;i++)map_module(&modules[i],argv[1]);
- for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
- for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
+ for(unsigned i=0;i<nm;i++)map_module(&modules[i],argv[1]);
+ for(unsigned i=0;i<nm;i++)relocate(&modules[i]);
+ for(unsigned i=0;i<nm;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
- for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}
+ for(unsigned i=0;i<nm;i++){seal(&modules[i]);check_permissions(&modules[i]);}
  if(!strcmp(argv[2],"probe-gpu-mesh")){extern int mtl_probe_mesh(void);int checked=mtl_probe_mesh();printf("{\"status\":\"pass\",\"probe\":\"probe-gpu-mesh\",\"checked\":%d}\n",checked);return 0;}
  if(!strcmp(argv[2],"probe-gpu-indirect")){extern int mtl_probe_indirect(void);int checked=mtl_probe_indirect();printf("{\"status\":\"pass\",\"probe\":\"probe-gpu-indirect\",\"checked\":%d}\n",checked);return 0;}
  if(!strcmp(argv[2],"probe-gpu-writeback")||!strcmp(argv[2],"probe-gpu-sampler-border")||!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-vin")||!strcmp(argv[2],"probe-gpu-fout")||!strcmp(argv[2],"probe-gpu-pipeline-archive")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-texels-region")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-copy-alias")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_VERIFY_STARTUP")||getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
