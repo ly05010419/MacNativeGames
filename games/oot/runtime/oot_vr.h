@@ -27,7 +27,9 @@
 #include "../zeldaVR/runtime/vr_view_math.h"
 #include "../zeldaVR/runtime/oot_vr_view.h"
 #include "../zeldaVR/runtime/oot_gamedata.h"
+#include "../zeldaVR/runtime/oot_vr_dungeon.h"
 #include "../zeldaVR/runtime/oot_vr_comfort.h"
+int vr_oot_move_head(void);   /* zeldaVR/gfx/totk_vr.m: first person walks where the head looks (1) or the body faces (0) */
 
 enum {
     OOT_VR_FOV_CELL = 72,         /* data page: the headset's vertical field of view (float radians), 0 = the game's */
@@ -83,13 +85,23 @@ static const uint32_t OOT_VR_LOD_NEXT = 0xbd41d662u;      /* ldr s2, [x19, #0x1d
 static _Atomic uint32_t *oot_vr_lod_cell, *oot_vr_fov_cell;   /* the second is defined below, with the other cells */
 static _Atomic int oot_vr_lod_forced;                     /* thousandths, from the flag; 0 = computed */
 static float oot_vr_lod_ref;                              /* the game's own vertical angle while it is not aiming, radians */
+/* The VR page's "model detail distance" (zeldaVR/gfx/totk_vr.m vr_oot_detail, HookshotVR's presets): the angle the levels are
+   picked as if the picture had. 0 the game's own (as before), 1 70 degrees (coarser), 2 35 and 3 25 degrees (finer, further),
+   4 off: the headset's own angle, the game's own sum left alone. */
+int vr_oot_detail(void);
+static float oot_vr_detail_ref(int preset) {
+    static const float deg[] = { 0, 70, 35, 25 };
+    return preset >= 1 && preset <= 3 ? deg[preset] / 57.2957795f : oot_vr_lod_ref;
+}
 static void oot_vr_lod_update(float game_fov) {
     if (!oot_vr_lod_cell) return;
     if (game_fov * 57.2957795f >= 46.5f && game_fov < 3.0f) oot_vr_lod_ref = game_fov;   /* it narrows the angle to aim: not the reference */
     float k = 1, vr = 0; uint32_t bits = oot_vr_fov_cell ? atomic_load(oot_vr_fov_cell) : 0; memcpy(&vr, &bits, 4);
-    const int forced = atomic_load(&oot_vr_lod_forced);
+    const int forced = atomic_load(&oot_vr_lod_forced), preset = vr_oot_detail();
+    const float ref = oot_vr_detail_ref(preset);
     if (forced > 0) k = (float)forced / 1000.0f;
-    else if (bits && vr > 0.1f && vr < 3.0f && oot_vr_lod_ref > 0.1f) k = tanf(vr / 2) / tanf(oot_vr_lod_ref / 2);
+    else if (preset == 4) k = 1;
+    else if (bits && vr > 0.1f && vr < 3.0f && ref > 0.1f) k = tanf(vr / 2) / tanf(ref / 2);
     if (!(k >= 0.25f && k <= 16.0f)) k = 1;
     memcpy(&bits, &k, 4);
     if (atomic_exchange(oot_vr_lod_cell, bits) != bits) fprintf(stderr, "[vr] OOT level of detail: projected sizes x%.3f (the headset's angle against the game's own)\n", (double)k);
@@ -136,7 +148,6 @@ static _Atomic int oot_vr_cull_live, oot_vr_fill_seen;
 static _Atomic uint64_t oot_vr_fill_restored;
 static _Atomic uint32_t oot_vr_game_fov_bits;     /* the game's own vertical angle, radians: it narrows it to aim */
 static _Atomic uint32_t oot_vr_game_pitch_bits;   /* how far up the game's own camera looks, radians (the VR view is levelled) */
-static _Atomic uint64_t oot_vr_event_since;       /* since when a scene of the game has been playing, 0 none */
 
 static uint64_t oot_vr_load64(uintptr_t a) { uint64_t v; memcpy(&v, (const void *)a, 8); return v; }
 static uint32_t oot_vr_float_bits(float f) { uint32_t b; memcpy(&b, &f, 4); return b; }
@@ -187,6 +198,11 @@ int runtime_oot_vr_feet(float out[3], uint64_t *age_ns) {
    +104 holder, its name at +8). All read on Link's own update through a reader that refuses a stale pointer. */
 static pthread_mutex_t oot_vr_status_mu = PTHREAD_MUTEX_INITIALIZER;
 static oot_status oot_vr_status_now;
+static oot_dungeon_row oot_vr_dungeon_now = { -1, 0, 0, 0 };
+int runtime_oot_vr_dungeon(oot_dungeon_row *out) {
+    pthread_mutex_lock(&oot_vr_status_mu); *out = oot_vr_dungeon_now; pthread_mutex_unlock(&oot_vr_status_mu);
+    return out->dungeon >= 0;
+}
 static _Atomic uint32_t oot_vr_crawl_bits;
 static _Atomic uint32_t oot_vr_action_now;   /* Link's action state (the player object's +0x1f60) */
 /* The game aims the slingshot or the bow: its aim camera is on (bit 0x2000000) and the low byte says raising or drawn
@@ -198,7 +214,8 @@ int runtime_oot_vr_two_hands_held(void) {
     pthread_mutex_lock(&oot_two_hands.mu); const uint64_t at = oot_two_hands.at; pthread_mutex_unlock(&oot_two_hands.mu);
     return at && oot_vr_now() - at < 150000000ull;
 }
-static _Atomic int oot_vr_event_kind_now, oot_vr_events_keep_eyes = 1;
+static _Atomic int oot_vr_event_kind_now;
+static char oot_vr_event_text[64];   /* the scene's name, Link's update only (oot_vr_scene.h) */
 static int oot_vr_safe_read(uintptr_t at, void *out, size_t size) { return oot_scan_read(at, out, size); }
 int runtime_oot_vr_status(oot_status *out) {
     pthread_mutex_lock(&oot_vr_status_mu); *out = oot_vr_status_now; pthread_mutex_unlock(&oot_vr_status_mu);
@@ -206,8 +223,6 @@ int runtime_oot_vr_status(oot_status *out) {
 }
 float runtime_oot_vr_crawl(void) { return oot_vr_bits_float(atomic_load(&oot_vr_crawl_bits)); }
 int runtime_oot_vr_event_kind(void) { return atomic_load(&oot_vr_event_kind_now); }
-/* The VR page: 1 (default) the player keeps his own eyes through talks, signs, doors and arrivals; 0 the game's camera takes every scene. */
-void runtime_oot_vr_events_keep_eyes(int on) { atomic_store(&oot_vr_events_keep_eyes, on != 0); }
 static void oot_vr_state_read(uintptr_t player, uintptr_t events) {
     { uint32_t action = 0; memcpy(&action, (const void *)(player + 0x1f60), 4); atomic_store(&oot_vr_action_now, action); }
     {   /* the crawl */
@@ -232,6 +247,7 @@ static void oot_vr_state_read(uintptr_t player, uintptr_t events) {
             if (said < 300) { said++; fprintf(stderr, "[vr-event] %.2f s: %s%s%s (kind %d)\n", (double)oot_vr_now() / 1e9, holder ? "scene \"" : "no scene", holder ? name : "", holder ? "\"" : "", kind); }
             memcpy(last, name, sizeof last);
         }
+        memcpy(oot_vr_event_text, name, sizeof oot_vr_event_text);
         atomic_store(&oot_vr_event_kind_now, kind);
     }
     static uint64_t read_at;   /* the saved flags, five times a second */
@@ -246,26 +262,59 @@ static void oot_vr_state_read(uintptr_t player, uintptr_t events) {
     pthread_mutex_unlock(&oot_vr_status_mu);
     static int lines;
     if (changed && lines < 60) { lines++; fprintf(stderr, "[vr] OOT status: %s, life %d of %d quarter hearts, magic %d of %d, rupees %d\n", s.have ? "save read" : "no save", s.life, s.max_life, s.magic, s.max_magic, s.rupees); }
-    {   /* the map Link is in, when it changes (the log) */
-        static char last_map[OOT_GD_TEXT_BYTES]; static int map_lines; char map[OOT_GD_TEXT_BYTES];
-        if (manager && oot_gd_text(oot_vr_safe_read, (uintptr_t)manager, OOT_GD_MAP, map) && strcmp(map, last_map) && map_lines < 40) {
+    {   /* the map Link is in, when it changes (the log); in a dungeon its keys and pieces, for the wrist panel (oot_vr_dungeon.h) */
+        static char last_map[OOT_GD_TEXT_BYTES]; static int map_lines; char map[OOT_GD_TEXT_BYTES] = "";
+        const int have_map = manager && oot_gd_text(oot_vr_safe_read, (uintptr_t)manager, OOT_GD_MAP, map);
+        if (have_map && strcmp(map, last_map) && map_lines < 40) {
             map_lines++; memcpy(last_map, map, sizeof last_map); fprintf(stderr, "[vr] OOT map: %s\n", map);
         }
+        oot_dungeon_row row; (void)oot_dungeon_read(oot_vr_safe_read, have_map ? (uintptr_t)manager : 0, map, &row);
+        pthread_mutex_lock(&oot_vr_status_mu); const int moved = memcmp(&row, &oot_vr_dungeon_now, sizeof row) != 0; oot_vr_dungeon_now = row; pthread_mutex_unlock(&oot_vr_status_mu);
+        static int dungeon_lines;
+        if (moved && dungeon_lines < 60) { dungeon_lines++; fprintf(stderr, "[vr-wrist] %s%s: small keys %d, found %#x of %#x (1 boss key, 2 map, 4 compass)\n", row.dungeon >= 0 ? "dungeon " : "no dungeon", row.dungeon >= 0 ? OOT_DUNGEONS[row.dungeon].prefix : "", row.keys, row.owned, row.has); }
     }
 }
 
 #include "oot_vr_wheel_host.h"
-/* The hook at the entry of a hit sensor's update: for Link's, the blade's attack (oot_vr_sword.h) and then the item wheel's
-   calls (oot_vr_wheel_host.h), one chain. */
+#include "oot_vr_bowstate.h"
+#include "oot_vr_putaway.h"
+#include "oot_vr_near.h"
+#include "oot_vr_aim.h"
+#include "oot_vr_stance.h"   /* the sword held without a slash (vr.md row 46) */
+#include "oot_vr_touch.h"    /* the blade's own contact, a hit in the air (rows 44, 47) */
+#include "oot_vr_guard.h"    /* the shield out, an untargeted guard's facing (rows 52, 53) */
+#include "oot_vr_hand_items.h"   /* vr.md rows 63-67: the hookshot, boomerang, bombs and bottles in the hands */
+#include "oot_vr_scene.h"
+#include "oot_vr_ocarina.h"
+/* Calls one after another: b after the last of a. */
+static oot_guest_call *oot_calls_then(oot_guest_call *a, oot_guest_call *b) {
+    if (!a) return b;
+    oot_guest_call *last = a;
+    while (last->next) last = last->next;
+    last->next = b;
+    return a;
+}
+/* The hook at the entry of a hit sensor's update: for Link's, the blade's attack (oot_vr_sword.h), the item wheel's calls
+   (oot_vr_wheel_host.h), the put-away (oot_vr_putaway.h), the third-person aim's question (oot_vr_aim.h) and the item on the
+   button (oot_vr_bowstate.h), one chain. */
 static oot_guest_call *oot_link_calc(oot_hook_regs *r) {
     const uintptr_t sensor = (uintptr_t)r->x[0];
     if (!sensor || sensor != atomic_load_explicit(&oot_link_sensor, memory_order_relaxed)) return NULL;
-    oot_guest_call *head = oot_blade_calc(r), *wheel = oot_wheel_calc();
-    if (!head) return wheel;
-    oot_guest_call *last = head;
-    while (last->next) last = last->next;
-    last->next = wheel;
-    return head;
+    oot_touch_calc(); oot_guard_calc();
+    oot_guest_call *stance = oot_stance_calc();
+    oot_guest_call *put = oot_putaway_calc();
+    if (put) put->next = NULL;
+    oot_guest_call *aim = oot_aim_calc();
+    if (aim) aim->next = NULL;
+    oot_guest_call *bow = oot_bowstate_calc();   /* the item on the button, for the bow's grip (oot_vr_bowstate.h) and the hand items (oot_vr_hand_items.h) */
+    if (bow) bow->next = NULL;
+    oot_guest_call *scene = oot_scene_calc();   /* the scene's lighting (oot_vr_scene.h) */
+    if (scene) scene->next = NULL;
+    /* merge 2026-11-27, in this order: the blade (base), the wheel, the put-away, the aim's question, the item-button query (a's,
+       which b's hand items read), the stance's draw call (e), the scene's lighting (c), the hand items' calls (b), the ocarina's
+       count (c). Each part's calls are made fresh every update, so none carries a stale next. */
+    return oot_calls_then(oot_calls_then(oot_calls_then(oot_calls_then(oot_calls_then(oot_calls_then(oot_calls_then(oot_calls_then(
+               oot_blade_calc(r), oot_wheel_calc()), put), aim), bow), stance), scene), oot_hand_items_calc()), oot_ocarina_calc());
 }
 
 /* Link's movement update. Other actors run this code too: his own update is told by the class of its actor and of the
@@ -274,6 +323,8 @@ static void oot_vr_player(uint8_t *actor, uint8_t *unused) {
     (void)unused;
     if (!oot_vr_base || !actor) return;
     const uintptr_t base = (uintptr_t)oot_vr_base, a = (uintptr_t)actor;
+    oot_touch_seen(a);   /* every actor: the targets near the blade (oot_vr_touch.h) */
+    oot_bombs_actor(a);   /* a Bomb Flower's fruit waiting on its plant (oot_vr_bombs.h); nothing unless its option and the bracelet */
     if (oot_vr_load64(a) != base + OOT_VR_ACTOR_VTABLE) return;
     const uintptr_t components = oot_vr_load64(a + 624);
     const uintptr_t movement = components ? oot_vr_load64(components + 800) : 0;
@@ -285,6 +336,9 @@ static void oot_vr_player(uint8_t *actor, uint8_t *unused) {
     float feet[3]; memcpy(feet, actor + 796, sizeof feet);
     if (!isfinite(feet[0]) || !isfinite(feet[1]) || !isfinite(feet[2])) return;
     oot_vr_weapon_note(components);
+    oot_near_note(components);
+    oot_aim_note(components);
+    oot_bow_note(components);
     oot_blade_link(components, player);
     atomic_store_explicit(&oot_link_actor, a, memory_order_relaxed);
     const uintptr_t holder = oot_vr_load64(base + OOT_VR_EVENT_SLOT), events = holder ? oot_vr_load64(holder) : 0;
@@ -295,15 +349,10 @@ static void oot_vr_player(uint8_t *actor, uint8_t *unused) {
         last_event = word;
     }
     oot_vr_state_read(player, events);
-    /* A scene of the game takes the camera after 0.3 s: a flag up for a moment (opening a chest's first frame) keeps the eyes.
-       Only the scenes with a camera of their own do (a story scene, an item shown to the player); through a talk, a sign, a
-       door or an arrival the player keeps his eyes (runtime_oot_vr_events_keep_eyes 0: every scene, as before 2026-11-25). */
-    const int takes = !atomic_load(&oot_vr_events_keep_eyes) || oot_event_takes_view(atomic_load(&oot_vr_event_kind_now));
-    if (events && oot_vr_load64(events + 104) != 0 && takes) {
-        uint64_t none = 0; const uint64_t now = oot_vr_now();
-        atomic_compare_exchange_strong(&oot_vr_event_since, &none, now);
-        atomic_store(&oot_vr_in_event, now - atomic_load(&oot_vr_event_since) > 300000000ull);
-    } else { atomic_store(&oot_vr_event_since, 0); atomic_store(&oot_vr_in_event, 0); }
+    /* How a scene is shown is the camera's to decide each frame (oot_vr_scene.h oot_scene_camera_style, which sets oot_vr_in_event):
+       here what kind of scene plays, whether it has played 0.3 s (a flag up for a moment, a chest's first frame, keeps the eyes),
+       and Link's facing for the re-align after it. */
+    oot_scene_link(a, feet, events && oot_vr_load64(events + 104) != 0, oot_vr_event_text, atomic_load(&oot_vr_event_kind_now));
     if (pthread_mutex_trylock(&oot_vr_player_mu)) return;
     const int first = !oot_vr_feet_at;
     memcpy(oot_vr_feet, feet, sizeof feet); oot_vr_feet_at = oot_vr_now();
@@ -373,6 +422,7 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
     { static _Atomic int said; if (!atomic_exchange(&said, 1)) fprintf(stderr, "[vr] OOT: the game's own vertical angle %.2f degrees\n", (double)(game_fov * 57.2957795f)); }
     vr_cam_state control;
     vr_camera_control_read(&control);
+    const int style = oot_scene_camera_style(view, &control);   /* how a scene of the game is shown (oot_vr_scene.h); sets oot_vr_in_event */
     if (!control.on) {
         pthread_mutex_lock(&oot_vr_mu); oot_vr_base_valid = 0; pthread_mutex_unlock(&oot_vr_mu);
         oot_vr_hook_end(OOT_HOOK_OFF, view);
@@ -396,7 +446,13 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
     const int was_fp = atomic_exchange(&oot_vr_fp_on, fp);
     float game_level[12]; memcpy(game_level, m, sizeof m); vr_view_level(game_level);
     if (fp) {
-        if (!was_fp || aiming) atomic_store(&oot_vr_yaw_bits, oot_vr_float_bits(oot_view_yaw(game_level)));
+        /* The heading is taken fresh from the game's camera when first person starts or the game aims; back from a scene it stays the
+           player's own and turns with Link as the game turned him (the re-align, oot_vr_scene.h; off: fresh, as before). */
+        static int had_heading;
+        const int back = oot_scene.cut_was, keep = !was_fp && back && had_heading && oot_scene_keeps_heading();
+        if ((!was_fp && !keep) || aiming) atomic_store(&oot_vr_yaw_bits, oot_vr_float_bits(oot_view_yaw(game_level)));
+        else { const float turn = oot_scene_realign_take(style, back); if (turn != 0) runtime_oot_vr_yaw_add(turn); }
+        had_heading = 1; oot_scene.cut_was = 0;
         oot_fp_input in = { { feet[0], feet[1], feet[2] }, oot_vr_bits_float(atomic_load(&oot_vr_yaw_bits)), control.fp_blend,
                             control.fp_up[1], control.fp_fwd, { control.off[0], control.off[1], control.off[2] } };
         oot_fp_base(game_level, &in, m);
@@ -405,20 +461,31 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
     memcpy(oot_vr_base_view, m, sizeof m); oot_vr_base_valid = 1;
     pthread_mutex_unlock(&oot_vr_mu);
     memcpy(oot_vr_cam.game_right, m, 16);
-    if (!fp) {
+    const int vantage = !fp && oot_style_is_3d(style) && oot_scene_vantage(view, &control, style, m);   /* a 3D scene's seat (oot_vr_scene.h) */
+    if (vantage) { pthread_mutex_lock(&oot_vr_mu); memcpy(oot_vr_base_view, m, sizeof m); pthread_mutex_unlock(&oot_vr_mu); }
+    if (!fp && !vantage) {
         for (int i = 0; i < 3; i++) m[4 * i + 3] -= vr_dot3(m + 4 * i, control.off);
         m[11] -= control.cam_back;
     }
+    const float body_yaw = atan2f(-m[8], m[10]);   /* before the head's turn: the heading the body faces */
     if (!atomic_load(&oot_vr_dbg_noturn)) vr_view_turn(m, control.h, m);   /* "flag vr_noturn 1" (diagnostic): the game's own view, the head not applied */
-    /* Third person the left stick goes by the game's camera, not by where the head looks; first person by the head. */
+    /* Third person the left stick goes by the game's camera, not by where the head looks; first person by the head, or by the
+       body's heading when the VR page says so (vr_oot_move_head 0: the head's own turn taken back out, as HookshotVR's "camera"). */
     { const float turned = atan2f(-m[8], m[10]), game = atan2f(-game_level[8], game_level[10]);
-      atomic_store(&oot_vr_move_turn_bits, oot_vr_float_bits(fp ? 0 : oot_wrap_pi(game - turned))); }
+      const int by_head = vr_oot_move_head();
+      if (fp) { const float way = by_head ? turned : body_yaw; oot_guard_face_note(sinf(way), -cosf(way)); }   /* the stick's way: an untargeted guard faces it (oot_vr_guard.h) */
+      const float move = fp ? (by_head ? 0 : oot_wrap_pi(body_yaw - turned)) : oot_wrap_pi(game - turned);
+      atomic_store(&oot_vr_move_turn_bits, oot_vr_float_bits(move));
+      static float said = 100; static uint64_t said_at;   /* the log: the left stick's turn as it changes by 10 degrees, at most twice a second */
+      if (fabsf(move - said) > 0.1745f && oot_vr_now() - said_at > 500000000ull) { said = move; said_at = oot_vr_now();
+          fprintf(stderr, "[vr] OOT: the left stick turned by %.0f degrees (%s, %s)\n", (double)(move * 57.2957795f), fp ? "first person" : "third person", fp ? (by_head ? "where the head looks" : "where the body faces") : "the game's camera"); } }
     if (fp && atomic_load(&oot_vr_fill_seen)) {   /* the game sorts with the camera moved back, so the hands below the eye stay */
         float culled[12]; oot_cull_view(m, control.fp_up[1] * control.fp_blend, culled);
         pthread_mutex_lock(&oot_vr_cull_mu); oot_cull_put(&oot_vr_cull, culled, m[11]); pthread_mutex_unlock(&oot_vr_cull_mu);
         atomic_store(&oot_vr_cull_live, 1);
         memcpy(view + 8, culled, sizeof culled);
     } else memcpy(view + 8, m, sizeof m);
+    oot_scene_cull_write(view, m, style);
     /* The ring the replay matches each frame's camera block against (totk_vr.m vr_note_camera): this frame's head pose. */
     const uint32_t calls = __atomic_load_n(&oot_vr_cam.calls, __ATOMIC_RELAXED) + 1;
     memcpy(oot_vr_cam.ring[calls & 15].m, m, sizeof m);
@@ -463,6 +530,20 @@ static const oot_hook_site OOT_VR_HOOKS[] = {
     { 0x2dff2d0, 0xd503237fu, 0, 0, oot_shot_entry, "the shoot function's entry: is the shooter Link" },
     { 0x2e035f0, 0x394073a8u, 0, 0, oot_shot_launch, "a launch worked out: the shot along the two hands" },
     { 0x2e036d0, 0x52832c08u, 0, 0, oot_shot_launch, "a launch worked out (its other way)" },
+    { 0x7f47c, 0xbd41c923u, 1, 0, oot_near_test, "a model's near-plane test: the held sword and shield kept (oot_vr_near.h)" },
+    { 0x7df54, 0xbd41c923u, 1, 0, oot_near_test, "a model's near-plane test (its other branch)" },
+    { 0xc08f0, 0xd503237fu, 0, 0, oot_stance_request, "an action request's entry: Link's kept drawn, his slash refused (oot_vr_stance.h)" },
+    { 0x2b435b0, 0xd503237fu, 0, 0, oot_stance_selector_seen, "a player sub selector's request handler: which is Link's (oot_vr_stance.h)" },
+    { 0x93533c, 0xbd400821u, 1, 0, oot_guard_face, "the shared facing setter's z load: an untargeted guard faces the stick's way (oot_vr_guard.h)" },
+    { 0x335ad0, 0xbd41de80u, 1, 1, oot_light_tan_0, "a light / shadow reader of tan(half angle) (log)" },
+    { 0x6bc924, 0xbd41dd08u, 1, 1, oot_light_tan_1, "another light / shadow reader (log)" },
+    /* the items in the hands (oot_vr_hand_items.h, oot_vr_bombs.h; each word read on our image, 2026-11-27) */
+    { 0x2fec420, 0x1e2a3842u, 1, 0, oot_ih_hook_aim, "the hookshot's aim check: its line along the hand" },
+    { 0x2fed8a4, 0x2d150a61u, 1, 0, oot_ih_hook_start, "the hookshot's aim check: its start at the hand" },
+    { 0x2a0b2a8, 0x91008260u, 1, 0, oot_ih_boom_aim, "the boomerang's point ahead of the camera: the player's aim" },
+    { 0x26384b0, 0xd503237fu, 0, 0, oot_bomb_ai, "a bomb's own update: held, pulled, thrown, its fuse" },
+    { 0xe34cb0, 0xb9401328u, 1, 0, oot_ih_bottle_keep, "a slot's stow: the held bottle stays drawn" },
+    { 0x2889280, 0xd503237fu, 0, 0, oot_ocarina_tick, "the ocarina's note wait: the game waits for notes (oot_vr_ocarina.h)" },
 };
 enum { OOT_VR_HOOK_COUNT = sizeof OOT_VR_HOOKS / sizeof *OOT_VR_HOOKS };
 static uintptr_t oot_vr_hook_stubs;   /* the first site's stub */
@@ -491,6 +572,10 @@ static void oot_vr_hooks_install(Module *m, uint64_t pad, uint64_t page) {
         uint32_t have, stub[OOT_HOOK_STUB_WORDS]; memcpy(&have, m->base + h->site, 4);
         if (have != h->word) { fprintf(stderr, "[vr] OOT hook at main+%#llx: %08x where %08x is expected\n", (unsigned long long)h->site, have, h->word); runtime_fail("OOT VR: a hook site differs from verified update 131072"); }
         if (h->log_only && !logging) continue;
+        /* the near-plane rescue only with TOTK_VR_NEAR=1: batch2 (2026-11-27) counted 1,043 tests of the held sword and shield and not
+           one the near plane dropped, since the culling view is already moved back an eye height (oot_cull_view); each model's test
+           would go through the hook body for nothing */
+        if (h->fn == oot_near_test && !(getenv("TOTK_VR_NEAR") && *getenv("TOTK_VR_NEAR") == '1')) continue;
         const uint64_t at = stubs + (uint64_t)k * OOT_HOOK_STUB_WORDS * 4;
         e = oot_hook_stub(have, h->after, b + at, b + h->site, b + body, stub);
         const uint32_t to = oot_vr_b(h->site, at);
@@ -500,7 +585,8 @@ static void oot_vr_hooks_install(Module *m, uint64_t pad, uint64_t page) {
         memcpy(m->base + h->site, &to, 4);
         installed++;
     }
-    fprintf(stderr, "[vr] OOT: %d small hooks on the shared body (%llu bytes of text padding left)\n", installed, (unsigned long long)(limit - end));
+    const uint64_t thunks_end = oot_bombs_thunks_install(m, end, limit);   /* two float thunks for the bombs' calls, after the stubs */
+    fprintf(stderr, "[vr] OOT: %d small hooks on the shared body (%llu bytes of text padding left)\n", installed, (unsigned long long)(limit - thunks_end));
 }
 
 int runtime_oot_vr_hooks_on(void) { return oot_vr_hook_stubs != 0; }

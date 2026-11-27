@@ -14,12 +14,17 @@ extern int runtime_oot_vr_hooks_on(void) __attribute__((weak_import));   /* the 
 /* Option (the VR page): wheel 1 the item wheel on. */
 int vr_oot_wheel(void) { return vr_option("wheel", 1) != 0; }
 void vr_oot_set_wheel(int on) { vr_option_set("wheel", on != 0); VLOG("the item wheel: %s", on ? "on" : "off"); }
+/* Where it opens (option wheel_hand: 0 before the eyes as before, 1 over the right hand, smaller, facing the eyes; HookshotVR offers
+   both). */
+int vr_oot_wheel_hand(void) { return vr_option("wheel_hand", 0) != 0; }
+void vr_oot_set_wheel_hand(int on) { vr_option_set("wheel_hand", on != 0); VLOG("the item wheel opens %s", on ? "over the right hand" : "before the eyes"); }
+static const float OOT_WHEEL_HAND_SIZE = 0.40f;
 
 enum { OOT_WHEEL_PX = 1024 };
 static const float OOT_WHEEL_SIZE = 0.62f, OOT_WHEEL_AHEAD = 0.72f;   /* metres across, and ahead of the eyes */
 static struct {
     pthread_mutex_t mu;
-    int open, listed, placed, n, rows[OOT_WHEEL_SLOTS], highlight;
+    int open, gear, listed, placed, n, rows[OOT_WHEEL_SLOTS], highlight;
     uint64_t opened_at, asked_at, listed_at;
     oot_wheel_pick pick;
 } g_wheel = { .mu = PTHREAD_MUTEX_INITIALIZER, .highlight = -1 };
@@ -35,17 +40,17 @@ static void oot_wheel_close(const char *why) {
     pthread_mutex_unlock(&g_wheel.mu);
     if (was) VLOG("item wheel: closed (%s)", why);
 }
-/* The pad's thread: the left stick pressed + A. */
-static void oot_wheel_toggle(int world) {
+/* The pad's thread: the left stick pressed + A (gear 0, the items) or + B (gear 1, the equipment; vr.md row 87). */
+static void oot_wheel_toggle(int world, int gear) {
     if (oot_wheel_is_open()) { oot_wheel_close("the same buttons"); return; }
     if (!world || !vr_oot_wheel() || !runtime_oot_vr_wheel || !runtime_oot_vr_wheel_refresh || !runtime_oot_vr_wheel_select) return;
     if (!runtime_oot_vr_hooks_on || !runtime_oot_vr_hooks_on()) { static int said; if (!said) { said = 1; VLOG("item wheel: not opened, the game side's hooks are off (TOTK_VR_SWORD_FOLLOW=0)"); } return; }
     pthread_mutex_lock(&g_wheel.mu);
-    g_wheel.open = 1; g_wheel.listed = g_wheel.placed = g_wheel.n = 0; g_wheel.highlight = -1; g_wheel.pick = (oot_wheel_pick){ 0, -1 };
+    g_wheel.open = 1; g_wheel.gear = gear; g_wheel.listed = g_wheel.placed = g_wheel.n = 0; g_wheel.highlight = -1; g_wheel.pick = (oot_wheel_pick){ 0, -1 };
     g_wheel.opened_at = g_wheel.asked_at = now_ns();
     pthread_mutex_unlock(&g_wheel.mu);
     runtime_oot_vr_wheel_refresh();
-    VLOG("item wheel: opened");
+    VLOG("%s wheel: opened", gear ? "equipment" : "item");
 }
 /* The pad's thread, while it is open: the right stick. */
 static void oot_wheel_stick(float x, float y) {
@@ -104,7 +109,7 @@ static void wheel_render(const int rows[], int n, int lit) {
         const oot_wheel_item *it = &OOT_WHEEL_ITEMS[rows[k]];
         wheel_label(c, @(zh ? it->zh : it->en), zh ? 34 : 27, N / 2 + at[0], N / 2 + at[1], 1, k == lit);
     }
-    if (n <= 0) wheel_label(c, zh ? @"没有可以放到道具键的道具" : @"Nothing for the item button yet", 34, N / 2, N / 2, 0, 0);
+    if (n <= 0) wheel_label(c, zh ? @"这里没有可以选的东西" : @"Nothing to choose here yet", 34, N / 2, N / 2, 0, 0);
     else if (lit >= 0 && lit < n) wheel_label(c, @(zh ? OOT_WHEEL_ITEMS[rows[lit]].zh : OOT_WHEEL_ITEMS[rows[lit]].en), 50, N / 2, N / 2, 0, 0);
     else {
         wheel_label(c, zh ? @"右摇杆指向道具" : @"Right stick: point at an item", 30, N / 2, N / 2 + 26, 0, 0);
@@ -140,15 +145,23 @@ static void oot_wheel_update(const vr_pose *head, int world) {
             }
             if (len < 1e-3f) { f[0] = 0; f[2] = -1; len = 1; }
             f[0] /= len; f[2] /= len;
+            float size = OOT_WHEEL_SIZE;
             g_wheel_center[0] = head->p[0] + f[0] * OOT_WHEEL_AHEAD; g_wheel_center[1] = head->p[1] - 0.10f; g_wheel_center[2] = head->p[2] + f[2] * OOT_WHEEL_AHEAD;
-            g_wheel_right[0] = -f[2] * OOT_WHEEL_SIZE; g_wheel_right[1] = 0; g_wheel_right[2] = f[0] * OOT_WHEEL_SIZE;
-            g_wheel_up[0] = 0; g_wheel_up[1] = OOT_WHEEL_SIZE; g_wheel_up[2] = 0;
+            vr_hand hands[2]; vr_link_hands(hands);
+            if (vr_oot_wheel_hand() && hands[1].have) {   /* over the right hand, upright, turned to the eyes */
+                const float to[3] = { hands[1].p[0] - head->p[0], 0, hands[1].p[2] - head->p[2] }; const float l = sqrtf(to[0] * to[0] + to[2] * to[2]);
+                if (l > 0.05f) { f[0] = to[0] / l; f[2] = to[2] / l; }
+                size = OOT_WHEEL_HAND_SIZE;
+                g_wheel_center[0] = hands[1].p[0]; g_wheel_center[1] = hands[1].p[1] + 0.06f + size / 2; g_wheel_center[2] = hands[1].p[2];
+            }
+            g_wheel_right[0] = -f[2] * size; g_wheel_right[1] = 0; g_wheel_right[2] = f[0] * size;
+            g_wheel_up[0] = 0; g_wheel_up[1] = size; g_wheel_up[2] = 0;
             g_wheel.placed = 1;
         }
         if (!g_wheel.listed) {   /* the game's answer, newer than the opening */
             uint8_t owned[OOT_WHEEL_ITEM_COUNT]; int child = 1; uint64_t age = 0;
             if (runtime_oot_vr_wheel(owned, &child, &age) && age < t - g_wheel.opened_at) {
-                g_wheel.n = oot_wheel_list(owned, child, g_wheel.rows); g_wheel.listed = listed = 1; g_wheel.listed_at = t;
+                g_wheel.n = oot_wheel_list(owned, child, g_wheel.gear, g_wheel.rows); g_wheel.listed = listed = 1; g_wheel.listed_at = t;
             } else if (t - g_wheel.asked_at > 250000000ull) { g_wheel.asked_at = t; ask = 1; }
         }
         if (g_wheel.listed) { n = g_wheel.n; memcpy(rows, g_wheel.rows, sizeof rows); lit = g_wheel.highlight; g_wheel_show = 1; }

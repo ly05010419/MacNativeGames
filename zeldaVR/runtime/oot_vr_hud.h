@@ -29,9 +29,11 @@ static inline float oot_hud_follow(oot_hud_state *s, float head_yaw, float dt) {
     }
     return s->yaw;
 }
-/* The whole quad: `right` and `up` are its full width and height. */
-static inline oot_hud_quad oot_hud_place(const float head[3], float yaw) {
-    const float dist = 2.0f, width = 2 * dist * tanf(35 * (float)M_PI / 180), height = width * 9 / 16;
+/* The whole quad: `right` and `up` are its full width and height. deg: how wide it looks, 70 as OcarinaVR's (the VR page's
+   "HUD size", option hud_deg: HookshotVR lets the player size it too). */
+static inline oot_hud_quad oot_hud_place(const float head[3], float yaw, float deg) {
+    if (!(deg >= 20 && deg <= 120)) deg = 70;
+    const float dist = 2.0f, width = 2 * dist * tanf(deg / 2 * (float)M_PI / 180), height = width * 9 / 16;
     const float fx = sinf(yaw), fz = -cosf(yaw);
     oot_hud_quad q = { { head[0] + fx * dist, head[1] - 0.05f, head[2] + fz * dist },
                        { cosf(yaw) * width, 0, sinf(yaw) * width },
@@ -40,10 +42,12 @@ static inline oot_hud_quad oot_hud_place(const float head[3], float yaw) {
 }
 /* The big screen (title, menus, loading, cutscenes), a part of a circle of 3 m around the viewer showing the whole canvas: the game
    fills a headset-shaped canvas with its menus (2026-11-23: the middle 16:9 cut the title's menu off). As tall as a 110-degree 16:9
-   screen (3.24 m, in view without looking up or down), as wide as the canvas's shape makes it, at most 110 degrees. */
+   screen (3.24 m, in view without looking up or down), as wide as the canvas's shape makes it, at most 110 degrees. deg: that
+   110 as the VR page sets it (option screen_deg; HookshotVR sizes its screens too); the height goes with it. */
 enum { OOT_ARC_RADIUS_M = 3 };
-static inline void oot_arc_size(float w, float h, float *half_angle, float *height) {
-    const float widest = 55 * (float)M_PI / 180, tall = 2 * widest * OOT_ARC_RADIUS_M * 9 / 16, aspect = w > 0 && h > 0 ? w / h : 16.0f / 9;
+static inline void oot_arc_size(float w, float h, float deg, float *half_angle, float *height) {
+    if (!(deg >= 40 && deg <= 180)) deg = 110;
+    const float widest = deg / 2 * (float)M_PI / 180, tall = 2 * widest * OOT_ARC_RADIUS_M * 9 / 16, aspect = w > 0 && h > 0 ? w / h : 16.0f / 9;
     *half_angle = fminf(tall * aspect / (2 * OOT_ARC_RADIUS_M), widest);
     *height = 2 * *half_angle * OOT_ARC_RADIUS_M / aspect;
 }

@@ -15,11 +15,16 @@ static const uint64_t OOT_WEAPON_FRESH_NS = 150000000ull;   /* an older hand is 
 static struct {
     pthread_mutex_t mu;
     uintptr_t actor;
-    int in_hand;
+    int in_hand, stick;   /* stick: the weapon is the Deku Stick (equipment slot 1), not the sword (slot 0) */
     float game[12], target[12];
     uint64_t game_at, target_at;
 } oot_weapon = { .mu = PTHREAD_MUTEX_INITIALIZER };
 static _Atomic uintptr_t oot_weapon_actor;
+/* The blade's own contact and a hit in the air (oot_vr_touch.h, vr.md rows 44 and 47). */
+static void oot_touch_place(const float m[12]);
+static int oot_touch_hold(float final[12]);
+static int oot_touch_live(unsigned number, int stroke_live);
+static uint32_t oot_touch_kind(uintptr_t weapon, int stick, uint32_t own, unsigned number);
 
 /* The actor in one of the wearer's equipment slots, 0 when the slot is empty or its link is stale. */
 static uintptr_t oot_vr_equip_actor(uintptr_t components, unsigned slot, uint8_t *state) {
@@ -35,17 +40,36 @@ static uintptr_t oot_vr_equip_actor(uintptr_t components, unsigned slot, uint8_t
     return oot_vr_load64(holder + 0x40);
 }
 
+/* An actor's name begins with this (its SafeString at +0x260). */
+static int oot_actor_named(uintptr_t actor, const char *prefix) {
+    uint64_t text = 0; char name[32] = { 0 }; const size_t n = strlen(prefix);
+    return actor && n < sizeof name && oot_scan_read(actor + 0x260, &text, 8) && text >= 0x100000000ull && oot_scan_read((uintptr_t)text, name, n) && !memcmp(name, prefix, n);
+}
+/* The game's own "is it drawn" (its query main+0x29f26d0 -> main+0x4a8a60, HookshotVR's notes): the actor's Equipment component
+   (components +0x1d8) enabled (+0x98 bit 0) and in state 1 (+0x9c). */
+static int oot_equip_drawn(uintptr_t actor) {
+    uint64_t parts = 0, equipment = 0; uint8_t enabled = 0; uint32_t state = 0;
+    return actor && oot_scan_read(actor + 0x270, &parts, 8) && parts && oot_scan_read((uintptr_t)parts + 0x1d8, &equipment, 8) && equipment &&
+           oot_scan_read((uintptr_t)equipment + 0x98, &enabled, 1) && (enabled & 1) && oot_scan_read((uintptr_t)equipment + 0x9c, &state, 4) && state == 1;
+}
 /* From Link's update: which actor is his weapon, and whether the game last sent it to his hand. The state byte is a request of a
-   frame or two: 2 into the hand, 1 or 4 away. */
+   frame or two: 2 into the hand, 1 or 4 away. The Deku Stick (vr.md row 68) is taken out into slot 1 as "Weapon_DekuStick", a long
+   sword to the game (HookshotVR's notes): while the game says it is drawn it is the weapon, and goes with the hand as the sword does. */
 static void oot_vr_weapon_note(uintptr_t components) {
-    uint8_t state = 0;
-    const uintptr_t actor = oot_vr_equip_actor(components, 0, &state);
+    uint8_t state = 0, stick_state = 0;
+    uintptr_t actor = oot_vr_equip_actor(components, 0, &state);
+    const uintptr_t stick = oot_vr_equip_actor(components, 1, &stick_state);
+    const int stick_out = stick && (oot_actor_named(stick, "Weapon_DekuStick") || oot_actor_named(stick, "Item_DekuStick")) && oot_equip_drawn(stick);
+    if (stick_out) actor = stick;
     pthread_mutex_lock(&oot_weapon.mu);
     if (actor != oot_weapon.actor) {
         oot_weapon.actor = actor; oot_weapon.in_hand = 0; oot_weapon.game_at = oot_weapon.target_at = 0;
         atomic_store(&oot_weapon_actor, actor);
+        if (stick_out) fprintf(stderr, "[vr-blade] %.3f the Deku Stick is out: it goes with the hand, its hits are kind %d\n", (double)oot_vr_now() / 1e9, OOT_ATTACK_STICK);
     }
-    if (actor && (state & OOT_EQUIP_TO_HAND)) oot_weapon.in_hand = 1;
+    oot_weapon.stick = stick_out;
+    if (stick_out) oot_weapon.in_hand = 1;
+    else if (actor && (state & OOT_EQUIP_TO_HAND)) oot_weapon.in_hand = 1;
     else if (state & OOT_EQUIP_AWAY) oot_weapon.in_hand = 0;
     pthread_mutex_unlock(&oot_weapon.mu);
 }
@@ -65,6 +89,7 @@ void runtime_oot_vr_weapon_place(const float target[12]) {
     memcpy(oot_weapon.target, target, sizeof oot_weapon.target);
     oot_weapon.target_at = oot_vr_now();
     pthread_mutex_unlock(&oot_weapon.mu);
+    oot_touch_place(target);
 }
 
 static void oot_vr_sword_log(uintptr_t actor, int placed, const float game[12], const float final[12]) {
@@ -140,7 +165,7 @@ static void oot_vr_place(uint8_t *actor, uint8_t *target) {
         if (placed) memcpy(final, oot_weapon.target, sizeof final);
     }
     pthread_mutex_unlock(&oot_weapon.mu);
-    if (placed) { memcpy(target, final, sizeof final); oot_vr_sword_scan(a, game, final); }
+    if (placed) { oot_touch_hold(final); memcpy(target, final, sizeof final); oot_vr_sword_scan(a, game, final); }
     oot_vr_cut_log(game, final);
     if (placed) oot_vr_window_diff(a, atomic_load(&oot_vr_cuts_written));
     oot_vr_sword_log(a, placed, game, final);
@@ -227,10 +252,11 @@ static oot_guest_call *oot_blade_calc(oot_hook_regs *r) {
     pthread_mutex_lock(&oot_weapon.mu);
     const int in_hand = oot_weapon.actor && oot_weapon.in_hand && oot_weapon.target_at && now - oot_weapon.target_at < OOT_WEAPON_FRESH_NS;
     const uintptr_t weapon = oot_weapon.actor; const int weapon_alive = weapon && oot_weapon.game_at && now - oot_weapon.game_at < OOT_WEAPON_FRESH_NS;
+    const int stick = oot_weapon.stick;
     pthread_mutex_unlock(&oot_weapon.mu);
     pthread_mutex_lock(&oot_blade.mu);
-    const int live = in_hand && oot_stroke_live(&oot_blade.stroke, now);
     const unsigned number = oot_blade.stroke.number;
+    const int live = in_hand && oot_touch_live(number, oot_stroke_live(&oot_blade.stroke, now));
     /* +0x20 is set by a setup and moved to +0x21 by the sensor's own step before each update (HookshotVR's notes; blade6: +0x20
        reads 0 here in every frame of a swing whose attack the game took): at this entry +0x21 says what the last frame's setup left */
     uint8_t state = 0; memcpy(&state, (const void *)(sensor + 0x21), 1);
@@ -250,10 +276,11 @@ static oot_guest_call *oot_blade_calc(oot_hook_regs *r) {
         { static int lines; if (oot_blade_log_on() && lines++ < 60) fprintf(stderr, "[vr-blade] %.3f the weapon's own sensor %#llx resumed\n", (double)now / 1e9, (unsigned long long)was); }
         return &call;
     }
+    const uint32_t kind = oot_touch_kind(weapon, stick, stick ? (uint32_t)OOT_ATTACK_STICK : atomic_load(&oot_blade_kind), number);   /* the Deku Stick's own kind (HookshotVR: 101); the jump slash's in the air */
     if (report && number <= OOT_BLADE_LOG_LINES)   /* one update later: what the first setup did to the sensor */
-        fprintf(stderr, "[vr-blade] %.3f swing %u: the attack (kind %u) is %s (sensor +0x21 %#x -> %#x)\n", (double)now / 1e9, number, atomic_load(&oot_blade_kind),
+        fprintf(stderr, "[vr-blade] %.3f swing %u: the attack (kind %u) is %s (sensor +0x21 %#x -> %#x)\n", (double)now / 1e9, number, kind,
                 state ? "set up on Link's sensor" : "not on Link's sensor", before, state);
-    oot_attack_info(2, atomic_load(&oot_blade_kind), 1.0f, 1, info);
+    oot_attack_info(2, kind, 1.0f, 1, info);
     call = (oot_guest_call){ (uint64_t)(uintptr_t)(oot_vr_base + OOT_SENSOR_SETUP), (uint64_t)sensor, (uint64_t)(uintptr_t)info, 0, 0, 0, NULL, 0 };
     if (first && oot_blade_suspends() && weapon_alive && !oot_blade_suspended) {
         uint64_t parts = 0, own = 0;

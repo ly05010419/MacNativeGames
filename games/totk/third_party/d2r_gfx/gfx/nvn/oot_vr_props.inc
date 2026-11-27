@@ -9,6 +9,9 @@ static int g_oot_prop_reg = -1, g_oot_prop_side, g_oot_prop_weapon;
 static float g_oot_arm_length;      /* game units, shoulder to wrist */
 static float g_oot_prop_root[3];   /* the held thing's root, world space */
 static uint64_t g_oot_props_moved, g_oot_props_hidden;
+static int g_oot_prop_bracelet;   /* this draw is child Link's Goron Bracelet (oot_vr_wear.inc): carried on his arm, not held */
+static uint64_t oot_wear_bracelet_palette(const uint8_t *src, uint64_t size);   /* oot_vr_wear.inc */
+static void oot_grip_note(int to, int from, uint64_t frame);                    /* oot_vr_wear.inc: this hand's grip is that game hand's */
 
 /* After his palette is made: how each hand moved, in world space (world = palette + off). */
 static void oot_track_hand(int side, const float game_hand[12], const float new_hand[12], const float wrist_rest[3], const float chest_world[3], const float off[3], const float grip_rest[12]) {
@@ -29,10 +32,14 @@ static oot_hold_watch *oot_prop_watch(uint64_t size, uint64_t vb) {
     return oot_hold_watch_for(watched, size, vb);
 }
 #include "oot_vr_weapon.inc"
+#include "oot_vr_gear.inc"   /* the sword's tilt, the shield's poses (vr.md rows 42, 52) */
+#include "oot_vr_bow.inc"
+#include "oot_vr_itemget.inc"
 extern void runtime_oot_vr_two_hands(const float handle[3], const float pull[3]) __attribute__((weak_import));   /* oot_vr_sword.h: the shot's hooks */
+extern int runtime_oot_vr_item_hand(void) __attribute__((weak_import));   /* the player's hand holding a hand item, -1 none */
 /* 0: as the game draws it; 2: its palette moves with a hand; -1: not drawn. */
 static int oot_prop_draw(__unsafe_unretained NvShader *vs) {
-    g_oot_prop_reg = -1;
+    g_oot_prop_reg = -1; g_oot_prop_itemget = 0;
     if (!runtime_oot_vr_fp_active || !runtime_oot_vr_fp_active() || vr_oot_body_mode() != 0) return 0;
     if (R.rt.n < 1 || g_pass.tw < 640 || g_pass.th < 360 || g_pass.tw == g_pass.th) return 0;   /* his shadow keeps what he holds */
     const uint64_t now = atomic_load(&g_cur_frame);
@@ -56,6 +63,8 @@ static int oot_prop_draw(__unsafe_unretained NvShader *vs) {
         const float *p = s < 2 ? g_oot_track[s].wrist : chest_at;
         dist[s] = s < 2 && !live[s] ? 9.0f : sqrtf((at[0] - p[0]) * (at[0] - p[0]) + (at[1] - p[1]) * (at[1] - p[1]) + (at[2] - p[2]) * (at[2] - p[2]));
     }
+    g_oot_prop_arrow = 0;
+    if (oot_arrow_draw(S.ubo[0][reg].size, first, model + 16)) { g_oot_prop_reg = reg; g_oot_prop_arrow = 1; return 2; }   /* the nocked arrow (oot_vr_bow.inc) */
     oot_hold_watch *watch = oot_prop_watch(S.ubo[0][reg].size, S.vbuf[0].address);   /* once a frame: its depth and colour draws decide alike */
     if (watch->frame != now) { watch->frame = now; oot_hold_watch_step(watch, dist); }
     float weapon_game[12];
@@ -77,6 +86,7 @@ static int oot_prop_draw(__unsafe_unretained NvShader *vs) {
              watch->frames, (double)watch->jitter[0], (double)watch->jitter[1], (unsigned long long)S.vbuf[0].address,
              (double)first[0], (double)first[1], (double)first[2], (double)first[4], (double)first[5], (double)first[6], (double)first[8], (double)first[9], (double)first[10]);
     }
+    if (!weapon && oot_itemget_take(S.ubo[0][reg].size, at, chest_at)) { g_oot_prop_reg = reg; g_oot_prop_itemget = 1; return 2; }   /* an item get's item (oot_vr_itemget.inc) */
     if (side >= 0) {
         g_oot_prop_reg = reg; g_oot_prop_side = side; memcpy(g_oot_prop_root, at, sizeof at);
         if (!g_oot_props_moved++) MLOG("[vr] Link holds a model in his %s hand (palette block %d, %llu matrices)", side ? "right" : "left", reg, (unsigned long long)(S.ubo[0][reg].size / 48));
@@ -113,6 +123,7 @@ static void oot_items_load(void) {
     }
     atomic_store(&g_oot_item_count, count);
     MLOG("[vr] the string's bones known for %u of %d two-handed models", count, OOT_ITEMS);
+    oot_arrows_load();
 }
 static const oot_item_rig *oot_item_for(uint64_t size) {
     const uint32_t stride = S.stream[0].stride;
@@ -149,30 +160,52 @@ static int oot_prop_string(const oot_item_rig *item, int to, const uint8_t *src,
 /* The held model's palette, moved to the player's hand, in the ring of ours. Once per thing and frame: its depth and colour draws
    must have the same pose, and the colour pass keeps only the pixels whose depth is equal. */
 static uint64_t oot_prop_palette(uint64_t addr, const uint8_t *src, uint64_t size) {
+    if (g_oot_prop_itemget) return oot_itemget_palette(src, size);
     enum { MADE = 64 };
     static struct { uint64_t frame, addr, size, gpu; } made[MADE];
     const uint64_t frame = atomic_load(&g_cur_frame);
     const unsigned slot = (unsigned)((addr >> 4) * 2654435761u >> 26) % MADE;
     if (made[slot].frame == frame && made[slot].addr == addr && made[slot].size == size) return made[slot].gpu;
+    if (g_oot_prop_bracelet) { const uint64_t gpu = oot_wear_bracelet_palette(src, size);
+        made[slot].frame = frame; made[slot].addr = addr; made[slot].size = size; made[slot].gpu = gpu; return gpu; }
     if (g_oot_prop_reg < 0 || S.ubo[0][1].size < 76) return 0;
-    const int from = g_oot_prop_side, wanted = oot_hold_hand(from, vr_oot_left_handed());
-    const int to = g_oot_track[wanted].ok && frame - g_oot_track[wanted].frame < 4 ? wanted : from;
     float model[19]; pend_materialize(S.ubo[0][1].addr, (uint8_t *)model, sizeof model, 0);
-    const float to_world[12] = { 1, 0, 0, model[16], 0, 1, 0, model[17], 0, 0, 1, model[18] }, to_palette[12] = { 1, 0, 0, -model[16], 0, 1, 0, -model[17], 0, 0, 1, -model[18] };
+    if (g_oot_prop_arrow) {   /* the nocked arrow: onto the VR string (oot_vr_bow.inc) */
+        const uint64_t gpu = oot_arrow_palette(src, size, model + 16, frame);
+        if (gpu) { made[slot].frame = frame; made[slot].addr = addr; made[slot].size = size; made[slot].gpu = gpu; }
+        return gpu;
+    }
     const oot_item_rig *item = oot_item_for(size);   /* the slingshot or the bow: one handle, mirrored like the sword */
+    const int from = g_oot_prop_side, chosen = item ? vr_oot_bow_hand() : -1;   /* the bow: in the hand whose grip took it (oot_vr_bowgrip.h) */
+    /* the hookshot, boomerang or bottle in whichever hand gripped it (games/oot/runtime/oot_vr_hand_items.h), not by handedness. Only
+       a thing in his left hand (the one mirrored like the sword): what is on his right arm is taken for the shield here (oot_hold_mirrors),
+       and which of his hands the game gives these items is not checked yet. Merge 2026-11-27: the bow's hand (a) first, then this (b) */
+    const int item_hand = !item && !g_oot_prop_weapon && from == 0 && runtime_oot_vr_item_hand ? runtime_oot_vr_item_hand() : -1;
+    const int picked = chosen == 0 || chosen == 1 ? chosen : item_hand;
+    const int wanted = picked == 0 || picked == 1 ? picked : oot_hold_hand(from, vr_oot_left_handed());
+    const int to = g_oot_track[wanted].ok && frame - g_oot_track[wanted].frame < 4 ? wanted : from;
+    oot_grip_note(to, from, frame);   /* d (row 34), after a's choice of the bow's hand (row 54) */
+    const float to_world[12] = { 1, 0, 0, model[16], 0, 1, 0, model[17], 0, 0, 1, model[18] }, to_palette[12] = { 1, 0, 0, -model[16], 0, 1, 0, -model[17], 0, 0, 1, -model[18] };
     const int how = oot_hold_mirrors(from, to, item != NULL || vr_oot_aiming()), weapon = g_oot_prop_weapon && from == 0;
     float move[12], undo[12];   /* the weapon: its palette already follows the hand a frame late; undo takes it back to the game's pose */
     if (weapon) {
-        float actor[12];
-        oot_weapon_frame(src, to_world, g_oot_track[from].grip_game, g_oot_track[to].grip_new, how, to == wanted, undo, move, actor);
+        float actor[12], tilted[12];
+        oot_weapon_frame(src, to_world, g_oot_track[from].grip_game, to == wanted ? oot_gear_weapon_grip(g_oot_track[to].grip_new, tilted) : g_oot_track[to].grip_new,
+                         how, to == wanted, undo, move, actor);
         if (to == wanted) oot_blade_publish(actor, to);
     }
-    else oot_hold_move(g_oot_track[from].grip_game, g_oot_track[to].grip_new, g_oot_prop_root, how, move);
-    oot_prop_strung strung; const int two = oot_prop_string(item, to, src, frame, to_world, move, &strung);
-    if (item && runtime_oot_vr_two_hands && g_oot_track[1 - to].ok && frame - g_oot_track[1 - to].frame < 4) {   /* the shot leaves along the two hands (oot_vr_bow.h) */
-        const float handle[3] = { g_oot_track[to].grip_new[3], g_oot_track[to].grip_new[7], g_oot_track[to].grip_new[11] };
+    else { oot_hold_move(g_oot_track[from].grip_game, g_oot_track[to].grip_new, g_oot_prop_root, how, move); if (to == wanted) oot_gear_shield(size, from, to, item != NULL, g_oot_prop_root, move); }
+    const float palm[3] = { g_oot_track[to].grip_new[3], g_oot_track[to].grip_new[7], g_oot_track[to].grip_new[11] };
+    if (item && item->bow) oot_bow_sized(move, palm);   /* the VR page's bow size, about the grip */
+    oot_bow_parts parts; const oot_string_out *sol = NULL;   /* the string in the player's hand (oot_vr_bow.inc) */
+    if (item && g_oot_room_scale > 0.05f && vr_oot_string_input() != OOT_STRING_NONE && oot_bow_parts_at(item, src, to_world, move, palm, &parts)) sol = oot_bow_solve(item, &parts, to, frame);
+    oot_prop_strung strung; const int two = !sol && oot_prop_string(item, to, src, frame, to_world, move, &strung);
+    if (item && runtime_oot_vr_two_hands && sol) {   /* the shot leaves along the string's line, kept a moment after the let-go (oot_vr_bow.h) */
+        const float pull[3] = { sol->handle[0] - sol->dir[0] * 0.5f, sol->handle[1] - sol->dir[1] * 0.5f, sol->handle[2] - sol->dir[2] * 0.5f };
+        runtime_oot_vr_two_hands(sol->handle, pull);
+    } else if (item && runtime_oot_vr_two_hands && g_oot_track[1 - to].ok && frame - g_oot_track[1 - to].frame < 4) {   /* the shot leaves along the two hands (oot_vr_bow.h) */
         const float pull[3] = { g_oot_track[1 - to].grip_new[3], g_oot_track[1 - to].grip_new[7], g_oot_track[1 - to].grip_new[11] };
-        runtime_oot_vr_two_hands(handle, pull);
+        runtime_oot_vr_two_hands(palm, pull);
     }
     uint64_t gpu = 0; uint8_t *out = oot_palette_ring(size, &gpu);
     for (uint64_t k = 0; k + 48 <= size; k += 48) {
@@ -180,12 +213,14 @@ static uint64_t oot_prop_palette(uint64_t addr, const uint8_t *src, uint64_t siz
         oot_m_mul(to_world, m, world);
         if (weapon) { float game_pose[12]; oot_m_mul(undo, world, game_pose); memcpy(world, game_pose, sizeof world); }
         oot_m_mul(move, world, placed);
-        if (two) {
+        if (sol) oot_bow_pose_entry(item, (unsigned)(k / 48), &parts, sol->string_at, placed);
+        else if (two) {
             const float share = strung.item->share[k / 48] * strung.drawn;
             placed[3] += strung.pull[0] * share; placed[7] += strung.pull[1] * share; placed[11] += strung.pull[2] * share;
         }
         oot_m_mul(to_palette, placed, m); memcpy(out + k, m, 48);
     }
+    if (sol) oot_bow_posed_log(item, sol, frame);
     static int said;
     if (!said && to != from) { said = 1; MLOG("[vr] what Link holds in his %s hand is in the player's %s hand", from ? "right" : "left", to ? "right" : "left"); }
     made[slot].frame = frame; made[slot].addr = addr; made[slot].size = size; made[slot].gpu = gpu;

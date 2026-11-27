@@ -13,9 +13,10 @@ extern void runtime_oot_vr_set_child(int child) __attribute__((weak_import));
 int vr_oot_body_mode(void);   /* totk_vr.m, option body: 0 the arms, 1 nothing, 2 the whole body */
 
 enum { OOT_RIG_SHAPES = 64, OOT_BODY_TRIS = 256 };
-typedef struct { unsigned verts; uint8_t *arm; int any; } oot_rig_shape;
+typedef struct { unsigned verts; uint8_t *arm; int any; } oot_rig_shape;   /* arm[v]: bit 0 an arm's vertex, bit 1 a leg's (Waist and below); any: the bits of its vertices */
+enum { OOT_MARK_ARMS = 1, OOT_MARK_LEGS = 2 };
 typedef struct {
-    uint8_t *file; oot_bfres m; uint32_t *arms; unsigned palette_bytes, nshapes;
+    uint8_t *file; oot_bfres m; uint32_t *arms, *legs; unsigned palette_bytes, nshapes;
     oot_rig_shape shapes[OOT_RIG_SHAPES];
 } oot_rig;
 static oot_rig g_oot_rigs[2];
@@ -42,6 +43,11 @@ static const char *oot_rig_load_one(oot_rig *r, const char *path) {
         e = i < 2 ? oot_bfres_boneset_add(&r->m, r->arms, (unsigned)b) : oot_bfres_boneset_add_subtree(&r->m, r->arms, (unsigned)b);
         if (e) return e;
     }
+    {   /* the legs (oot_vr_legs.inc): Waist and everything under it; a model without a Waist has none */
+        const int waist = oot_bfres_find_bone(&r->m, "Waist");
+        r->legs = waist >= 0 ? calloc(OOT_BFRES_BONESET_WORDS(r->m.bone_count), 4) : NULL;
+        if (r->legs && (e = oot_bfres_boneset_add_subtree(&r->m, r->legs, (unsigned)waist))) return e;
+    }
     r->nshapes = r->m.shape_count < OOT_RIG_SHAPES ? r->m.shape_count : OOT_RIG_SHAPES;
     for (unsigned s = 0; s < r->nshapes; s++) {
         oot_bfres_shape shape; e = oot_bfres_shape_at(&r->m, s, &shape);
@@ -49,14 +55,17 @@ static const char *oot_rig_load_one(oot_rig *r, const char *path) {
         oot_rig_shape *o = &r->shapes[s]; o->verts = shape.vertex_count; o->arm = calloc(shape.vertex_count ? shape.vertex_count : 1, 1);
         if (!o->arm) return "out of memory";
         for (unsigned v = 0; v < shape.vertex_count; v++) {
-            int in = 0; e = oot_bfres_vertex_in_set(&shape, v, r->arms, &in);
+            int in = 0, leg = 0; e = oot_bfres_vertex_in_set(&shape, v, r->arms, &in);
+            if (!e && r->legs) e = oot_bfres_vertex_in_set(&shape, v, r->legs, &leg);
             if (e) return e;
-            o->arm[v] = (uint8_t)in; o->any |= in;
+            o->arm[v] = (uint8_t)((in ? OOT_MARK_ARMS : 0) | (leg ? OOT_MARK_LEGS : 0)); o->any |= o->arm[v];
         }
     }
     return NULL;
 }
 static void oot_items_load(void);   /* oot_vr_props.inc */
+static void oot_wear_load(void);    /* oot_vr_wear.inc */
+static void oot_legs_load(void);    /* oot_vr_legs.inc */
 static void oot_rig_load(void) {
     static const char *const paths[2] = { "extracted/oot/vr-rig/Player_Child.bfres", "extracted/oot/vr-rig/Player_Adult.bfres" };
     int ok = 1;
@@ -67,7 +76,7 @@ static void oot_rig_load(void) {
         MLOG("[vr] Link's body: %s, %u bones, palette %u bytes, %u shapes, %u with arm triangles", i ? "adult" : "child",
              g_oot_rigs[i].m.bone_count, g_oot_rigs[i].palette_bytes, g_oot_rigs[i].nshapes, arms);
     }
-    if (ok) oot_items_load();
+    if (ok) { oot_items_load(); oot_wear_load(); oot_legs_load(); }
     atomic_store(&g_oot_rig_state, ok ? 2 : 3);
 }
 static const oot_rig *oot_rig_for(uint64_t palette_bytes) {
@@ -82,21 +91,21 @@ static const oot_rig *oot_rig_for(uint64_t palette_bytes) {
     return NULL;
 }
 
-typedef struct { uint64_t ibuf, vb; int32_t count, base; body_tris_t bt; int used; } oot_body_entry;
+typedef struct { uint64_t ibuf, vb; int32_t count, base; body_tris_t bt; int used, mask; } oot_body_entry;
 static oot_body_entry g_oot_body[OOT_BODY_TRIS];
 static uint64_t g_oot_body_drawn, g_oot_body_hidden;
 
-static body_tris_t *oot_body_tris(const p_draw_idx *di, const oot_rig_shape *shape) {
+static body_tris_t *oot_body_tris(const p_draw_idx *di, const oot_rig_shape *shape, int mask) {
     const uint64_t vb = S.vbuf[0].address;
     oot_body_entry *free_entry = NULL;
     for (int i = 0; i < OOT_BODY_TRIS; i++) {
         oot_body_entry *x = &g_oot_body[i];
         if (!x->used) { free_entry = x; break; }
-        if (x->ibuf == di->ibuf && x->vb == vb && x->count == (int32_t)di->count && x->base == di->base_vertex) return x->bt.failed ? NULL : &x->bt;
+        if (x->ibuf == di->ibuf && x->vb == vb && x->count == (int32_t)di->count && x->base == di->base_vertex && x->mask == mask) return x->bt.failed ? NULL : &x->bt;
     }
     if (!free_entry) return NULL;
     oot_body_entry *x = free_entry;
-    x->used = 1; x->ibuf = di->ibuf; x->vb = vb; x->count = (int32_t)di->count; x->base = di->base_vertex; x->bt.failed = 1;
+    x->used = 1; x->ibuf = di->ibuf; x->vb = vb; x->count = (int32_t)di->count; x->base = di->base_vertex; x->mask = mask; x->bt.failed = 1;
     if (di->prim != 4 || di->itype < 1 || di->itype > 2 || di->count < 3) return NULL;
     const int isz = di->itype == 1 ? 2 : 4; void *mb; uint64_t mo;
     if (!mtl_addr(di->ibuf, (uint64_t)di->count * isz, &mb, &mo)) return NULL;
@@ -109,7 +118,7 @@ static body_tris_t *oot_body_tris(const p_draw_idx *di, const oot_rig_shape *sha
         int keep = 1;
         for (int j = 0; j < 3 && keep; j++) {
             const int64_t v = (int64_t)(isz == 2 ? ((const uint16_t *)(const void *)ix)[t + j] : ((const uint32_t *)(const void *)ix)[t + j]) + di->base_vertex;
-            keep = v >= 0 && v < (int64_t)shape->verts && shape->arm[v];
+            keep = v >= 0 && v < (int64_t)shape->verts && (shape->arm[v] & mask);
         }
         if (keep) { memcpy(to + (size_t)n * isz, ix + (size_t)t * isz, 3 * (size_t)isz); n += 3; }
     }
@@ -118,6 +127,8 @@ static body_tris_t *oot_body_tris(const p_draw_idx *di, const oot_rig_shape *sha
 }
 /* -1: this draw is not drawn; 0: as the game draws it; 1: g_body_tris_cur has its arm triangles. */
 static int oot_prop_draw(__unsafe_unretained NvShader *vs);   /* oot_vr_props.inc */
+static int oot_wear_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs);   /* oot_vr_wear.inc */
+static int oot_legs_on(const oot_rig *r);                      /* oot_vr_legs.inc */
 static int g_oot_palette_reg = -1;   /* the vertex uniform block holding this draw's palette (pass dump arms03: 3 or 4, by shader) */
 /* Diagnostic, off by default: "flag vr_body_trace <frames>" logs each draw holding Link's palette as it enters draw_inner, and
    what oot_body_draw decided and why. It tells a draw the game never made from one first person dropped. */
@@ -153,8 +164,10 @@ static void oot_body_trace_result(const p_draw *dw, const p_draw_idx *di, int bo
          di ? (int)di->count : dw ? (int)dw->count : -1, body, g_oot_body_why, g_oot_palette_reg,
          (double)oot_block_opacity(&S.ubo[0][2]), (double)oot_block_opacity(&S.ubo[1][2]), (int)S.ds.dw, (int)S.ds.df);
 }
+static void oot_arrow_fx_note(__unsafe_unretained NvShader *vs);   /* oot_vr_bow.inc: a magic arrow's effects follow the VR arrow */
 static int oot_body_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs) {
     g_oot_palette_reg = -1;
+    oot_arrow_fx_note(vs);
     if (!vs) OOT_BODY_RET(0, "no vertex shader");
     uint64_t bytes = 0;
     for (int i = 0; i < vs->rf.nb && !bytes; i++) {
@@ -162,7 +175,10 @@ static int oot_body_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs)
         const uint64_t size = S.ubo[0][vs->rf.b[i].reg].size;
         if (size == 13440 || size == 13488) { bytes = size; g_oot_palette_reg = vs->rf.b[i].reg; }
     }
-    if (!bytes) { const int prop = oot_prop_draw(vs); OOT_BODY_RET(prop, "not a palette in this shader's blocks: prop rule"); }
+    if (!bytes) {
+        const int worn = oot_wear_draw(di, vs);   /* a tunic or gauntlets on the arms, the bracelet, or something worn left out */
+        if (worn) OOT_BODY_RET(worn, "what Link wears (oot_vr_wear.inc)");
+        const int prop = oot_prop_draw(vs); OOT_BODY_RET(prop, "not a palette in this shader's blocks: prop rule"); }
     if (runtime_oot_vr_set_child) runtime_oot_vr_set_child(bytes == 13440);
     if (!runtime_oot_vr_fp_active || !runtime_oot_vr_fp_active() || !di || R.rt.n < 1) OOT_BODY_RET(0, "not first person, not indexed, or no colour target");
     if (g_pass.tw < 640 || g_pass.th < 360 || g_pass.tw == g_pass.th) OOT_BODY_RET(0, "shadow or small target");   /* his shadow and reflections stay whole */
@@ -176,8 +192,9 @@ static int oot_body_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs)
     const oot_rig_shape *shape = NULL;
     for (unsigned s = 0; s < r->nshapes && !shape; s++) if (r->shapes[s].verts == verts) shape = &r->shapes[s];
     if (!shape) OOT_BODY_RET(0, "no shape with this vertex count");   /* another model with a palette of this size */
-    if (mode == 1 || !shape->any) { g_oot_body_hidden++; OOT_BODY_RET(-1, mode == 1 ? "body option: hidden" : "shape has no arm triangles"); }
-    body_tris_t *bt = oot_body_tris(di, shape);
+    const int mask = OOT_MARK_ARMS | (oot_legs_on(r) ? OOT_MARK_LEGS : 0);   /* the legs too while they step (oot_vr_legs.inc) */
+    if (mode == 1 || !(shape->any & mask)) { g_oot_body_hidden++; OOT_BODY_RET(-1, mode == 1 ? "body option: hidden" : "shape has no arm triangles"); }
+    body_tris_t *bt = oot_body_tris(di, shape, mask);
     if (!bt) { g_oot_body_hidden++; OOT_BODY_RET(-1, "no triangle list (table full or failed)"); }
     if (!bt->n) { g_oot_body_hidden++; OOT_BODY_RET(-1, "no arm triangles in this draw"); }
     g_body_tris_cur = bt; g_oot_body_drawn++;
@@ -185,3 +202,4 @@ static int oot_body_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs)
     OOT_BODY_RET(1, "arm triangles");
 }
 #include "oot_vr_arms.inc"
+#include "oot_vr_song.inc"

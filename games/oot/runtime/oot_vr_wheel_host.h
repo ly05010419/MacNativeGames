@@ -15,6 +15,10 @@
 
 static const uint64_t OOT_POUCH_MANAGER_SLOT = 0x4e78e28, OOT_POUCH_SLOT = 0x4c7e0d0, OOT_POUCH_COUNT = 0x5963e0, OOT_ITEM_SELECT = 0x1211c00,
                       OOT_ITEM_ON_BUTTON = 0x17b6e0;
+/* The equipment wheel (vr.md row 87): main+0xa7acd0 (pouch manager, a pointer to a pointer to the gear's name, 3, 0) wears it, the call
+   the pause menu's equipment page makes (HookshotVR's notes; its entry, pacibsp, and its first three arguments read on our image). */
+static const uint64_t OOT_GEAR_EQUIP = 0xa7acd0;
+static const char *oot_gear_name;   /* Link's update only: the name the equip call is given */
 static struct { pthread_mutex_t mu; uint8_t owned[OOT_WHEEL_ITEM_COUNT]; int child; uint64_t at; } oot_wheel = { .mu = PTHREAD_MUTEX_INITIALIZER };
 static _Atomic int oot_wheel_refresh, oot_wheel_pending = -1;
 /* Link's update only: */
@@ -66,7 +70,18 @@ static oot_guest_call *oot_wheel_calc(void) {
     }
     oot_guest_call *head = NULL, **link = &head;
     const int item = atomic_exchange(&oot_wheel_pending, -1);
-    if (item >= 0) {
+    int gear_row = -1;
+    for (int i = 0; item >= 1000 && i < OOT_WHEEL_ITEM_COUNT; i++) if (OOT_WHEEL_ITEMS[i].item == item && OOT_WHEEL_ITEMS[i].gear) gear_row = i;
+    if (gear_row >= 0) {   /* a piece of gear: worn by the pause menu's own call */
+        uint64_t manager = 0;
+        if (oot_vr_safe_read(base + OOT_POUCH_MANAGER_SLOT, &manager, 8) && manager) {
+            oot_gear_name = OOT_WHEEL_ITEMS[gear_row].owned;
+            oot_wheel_select_call = (oot_guest_call){ (uint64_t)(base + OOT_GEAR_EQUIP), manager, (uint64_t)(uintptr_t)&oot_gear_name, 3, 0, 0, NULL, 0 };
+            *link = &oot_wheel_select_call; link = &oot_wheel_select_call.next;
+            fprintf(stderr, "[vr-wheel] %.3f %s is worn (the pause menu's equip call)\n", (double)oot_vr_now() / 1e9, OOT_WHEEL_ITEMS[gear_row].owned);
+        } else fprintf(stderr, "[vr-wheel] %s not worn: the pouch manager is not there\n", OOT_WHEEL_ITEMS[gear_row].owned);
+    }
+    else if (item >= 0) {
         uint64_t slot = 0, pouch = 0; int child;
         pthread_mutex_lock(&oot_wheel.mu); child = oot_wheel.child; pthread_mutex_unlock(&oot_wheel.mu);
         if (oot_vr_safe_read(base + OOT_POUCH_SLOT, &slot, 8) && slot && oot_vr_safe_read((uintptr_t)slot, &pouch, 8) && pouch) {

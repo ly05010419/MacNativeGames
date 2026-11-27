@@ -4336,6 +4336,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"vr_head_only")){extern void vr_head_only_set(int on);vr_head_only_set(v!=0);return;}
 #if defined(GAME_OOT) && TARGET_OS_OSX
     if (!strcmp(name, "vr_sword_follow")) { extern void oot_sword_follow_set(int on); oot_sword_follow_set(v); return; }   // 0: the sword's actor stays where the game puts it
+    if (!strncmp(name, "vr_opt_", 7)) { extern void vr_option_set_named(const char *option, int value); vr_option_set_named(name + 7, v); return; }   // a VR page option by its name (tests)
     if (!strcmp(name, "vr_keep_whole")) { extern void oot_keep_whole_set(int on); oot_keep_whole_set(v); return; }         // 0: the game may fade Link in first person
     if (!strcmp(name, "vr_arm_per_draw")) { extern void oot_arm_set_per_draw(int on); oot_arm_set_per_draw(v); return; }   // diagnostic: the arms read the controllers at every draw
     if (!strcmp(name, "vr_arm_jitter")) { extern void oot_arm_set_jitter(int on); oot_arm_set_jitter(v); return; }         // diagnostic: each reading moves the hands 1 mm
@@ -9436,6 +9437,9 @@ static uint8_t treg_kind(const tex_t *t) { return tex_mirrored(t) ? (pkg_hashed(
    deferred-release queue (treg_clear_view_locked), so the replay may hold it unretained. As an id return each call was a
    retain + autorelease (an autorelease-pool entry) on the texture slow path. */
 #define tex_by_id(tid) ((__bridge id<MTLTexture>)tex_by_id_p(tid))
+#if defined(GAME_OOT) && TARGET_OS_OSX
+#include "oot_vr_reticle_tex.inc"   /* zeldaVR: the game's flat aim reticle hidden while the VR one stands in for it */
+#endif
 static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
     g_up_tid = tid;   // the [uptime] line's ID (DM_NVN_UPTIME)
     { int pn = bound_tex_pool_n(); if (pn && tid >= pn) { if (!g_stat_tex_oob++) MLOG("池外贴图号 %d（绑定的池容量 %d）按空槽处理：读出 0", tid, pn); return NULL; } }
@@ -9542,6 +9546,9 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
         v = stor_sampling_view(base,(MTLPixelFormat)pf,tt,NSMakeRange(l0,nl),NSMakeRange(s0,ns),vsw,pkg);
         if (!v) { RED_ONCE(11, "贴图视图建不出 id %d", tid); v = base; }
     }
+#if defined(GAME_OOT) && TARGET_OS_OSX
+    v = oot_reticle_view(tid, &rp->t, v);
+#endif
     rp->view = (void *)CFBridgingRetain(v); rp->view_rid = v.gpuResourceID._impl; rp->view_tt = (uint8_t)v.textureType; rp->view_parent = (__bridge void *)v.parentTexture; rp->view_ser = sg; rp->view_pkg = treg_kind(&rp->t); rp->view_dirty = rp->view_pkg == 2 || (rp->view_pkg == 1 && tex_check_once()) ? g_sub_serial : dg;
     treg_link_locked(tid);
     return rp->view;
@@ -13652,8 +13659,10 @@ long g_vr_collapse = -1;         // the collapse itself, off by default (user 20
 long g_vr_collapse_j_cm = -1;
 #if defined(GAME_OOT) && TARGET_OS_OSX   /* OOT also rewrites the fragment stage's material block for these draws (oot_vr_whole.inc) */
 #define VR_MATERIAL_STAGE(stage) ((stage) <= 1)
+#define OOT_VR_OWN_BLOCK(stage, reg) ((stage) == 0 && (reg) == 10 && g_oot_fx_live)   /* a magic arrow's effect camera, per draw (oot_vr_bow.inc) */
 #else
 #define VR_MATERIAL_STAGE(stage) ((stage) == 0)
+#define OOT_VR_OWN_BLOCK(stage, reg) 0
 #endif
 static int g_vr_collapse_draw;   // set per draw (vr_head_eye_note's caller), read by encode_args
 static float g_vr_head_m[12]; static int g_vr_head_m_have, g_vr_head_n;   // the head bone's matrix at the head mesh's last draw, its palette's size
@@ -14912,7 +14921,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (g_eye_pass == 1 && g_eseg_n && u && u->addr) eseg_ubo(u->addr, u->size, nvn_stage, reg);   // stereo replay: does this segment use an eye matrix
             cbc_ent *ce = NULL; cbc_ctx cx; int ce_hit = 0;   // TOTK_CBUF_CACHE
             const uint64_t win = u ? (bl ? u->size : ubo_window(u->size, b->rd)) : 0;   // the bytes this shader reads (DM_NVN_CBDUMP saves the whole range)
-            if (cbc && u && u->addr && !g_usnap_skip && !g_usnap_keyskip && !g_usnap_keyskip3 && !(nvn_stage == 0 && reg == 0 && (ui_mat_on() || g_vr_ui_ray_draw)) && !(g_vr_collapse_draw && VR_MATERIAL_STAGE(nvn_stage) && reg == 2)) {
+            if (cbc && u && u->addr && !g_usnap_skip && !g_usnap_keyskip && !g_usnap_keyskip3 && !(nvn_stage == 0 && reg == 0 && (ui_mat_on() || g_vr_ui_ray_draw)) && !(g_vr_collapse_draw && VR_MATERIAL_STAGE(nvn_stage) && reg == 2) && !OOT_VR_OWN_BLOCK(nvn_stage, reg)) {
                 cbc_ctx_now(&cx); ce = &g_cbc[cbc_slot(u->addr, u->size)];
                 ce_hit = ce->addr == u->addr && ce->size == u->size && ce->win == win && !memcmp(&ce->cx, &cx, sizeof cx);
                 if (ce_hit) { g_cbc_hits++; if (cbc < 2) { slots[aid] = ce->gpu; watch_cb(sh ? sh->key : NULL, nvn_stage, reg, u->addr, u->size, ce->gpu, nil, "cache");
@@ -14930,7 +14939,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if ((race_on() || rdf_on()) && !ren && !usnap_find(u->addr, u->size ? u->size : 1)) gpu_read_input(u->addr, u->size, sh ? sh->key : NULL, 'u');
             if (watch_fs_prefix()) watch_cb(sh ? sh->key : NULL, nvn_stage, reg, u->addr, u->size, gpu, (__bridge id<MTLBuffer>)mb, ren ? "renamed" : usnap_find(u->addr, u->size ? u->size : 1) ? "snapshot" : "live");
 #if defined(GAME_OOT) && TARGET_OS_OSX
-            if (g_vr_collapse_draw == 3 && nvn_stage == 0 && reg == g_oot_palette_reg && (u->size == 13440 || u->size == 13488)) {   // zeldaVR: his arms on the controllers (oot_vr_body.inc)
+            if (g_vr_collapse_draw == 3 && nvn_stage == 0 && reg == g_oot_palette_reg && (u->size == 13440 || u->size == 13488 || oot_wear_palette_size(u->size))) {   // zeldaVR: his arms on the controllers (oot_vr_body.inc), a tunic or gauntlets with them (oot_vr_wear.inc)
                 static uint8_t oot_pal[13488]; pend_materialize(u->addr, oot_pal, (size_t)u->size, 0);
                 uint64_t pg = oot_body_palette(oot_pal, u->size); if (pg) gpu = pg; }
 #endif
@@ -14939,6 +14948,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 static uint8_t oot_prop[48 * 256]; pend_materialize(u->addr, oot_prop, (size_t)u->size, 0);
                 uint64_t pg = oot_prop_palette(u->addr, oot_prop, u->size); if (pg) gpu = pg; }
             if (g_vr_collapse_draw >= 3 && nvn_stage <= 1 && reg == 2) { const uint64_t pg = oot_whole_block(u); if (pg) gpu = pg; }   // zeldaVR: his arms and what he holds are not faded (oot_vr_whole.inc)
+            if (OOT_VR_OWN_BLOCK(nvn_stage, reg)) { const uint64_t pg = oot_arrow_fx_block(u); if (pg) gpu = pg; }   // zeldaVR: a magic arrow's effect on the VR arrow (oot_vr_bow.inc)
 #endif
             if (g_vr_collapse_draw && nvn_stage == 0 && reg == 2 && u->size <= 48 * 256) {   // zeldaVR: bones scaled to nothing, from the contents this draw reads (inline updates too)
                 static uint8_t pal[48 * 256]; pend_materialize(u->addr, pal, (size_t)u->size, 0);
@@ -20091,6 +20101,7 @@ frz_plain:;
         if (r2 && S.ubo[0][2].size == 64 * 48 && vr_player_head_mesh(pr->sh[0])) { g_body_tris_cur = body_tris_prepare(di, 64); g_vr_collapse_draw = g_body_tris_cur ? 3 : 2; }   // 3: its own triangles (body_tris_draw)
     }
 #if defined(GAME_OOT) && TARGET_OS_OSX
+    if (oot_song_fx_skip(pr->sh[0])) return;   // zeldaVR: a song's effects round the player's head, hidden on the VR page (oot_vr_song.inc)
     { const int body = oot_body_draw(di, pr->sh[0]); oot_body_trace_result(dw, di, body); if (body < 0) return; if (body == 1) g_vr_collapse_draw = 3; else if (body == 2) g_vr_collapse_draw = 4;
       if (g_vr_collapse_draw >= 3 && S.ds.dt && !S.ds.dw && g_pass.hd && oot_whole_faded()) { S.ds.dw = 1; cur_ds = dss_get(g_pass.hd, g_pass.hs); S.ds.dw = 0; g_dss_dirty = 1; } }   // zeldaVR: first person shows his arms (oot_vr_body.inc)
 #endif
@@ -21620,6 +21631,9 @@ static void mtl_exec_list(const uint8_t *p) {
     static uint64_t prompt_revision;
     uint64_t revision = TOTK_PROMPT_ICONS_ON ? totk_prompt_revision() : 0;
     if (revision != prompt_revision) { prompt_revision = revision; g_reg_gen++; }
+#if defined(GAME_OOT) && TARGET_OS_OSX
+    oot_reticle_frame();   /* zeldaVR: the game's flat reticle hidden or shown again (oot_vr_reticle_tex.inc) */
+#endif
     static int inited; if (!inited) { inited = 1; state_reset(); }
     if (!g_ret_n) dsp_note_game_barrier();   // a top-level command list: its first dispatch is ordered after earlier lists' work (nvn_dispatch_order.h)
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;

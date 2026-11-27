@@ -64,6 +64,53 @@ int main(void) {
     in = n; in.first_person = 1; in.stick[2] = 1; step(in, 10);
     o = step(in, 10); assert(fabsf(o.yaw - 120 * (float)M_PI / 180 * 0.01f) < 1e-4f);
     o = step(in, 500); assert(fabsf(o.yaw - 120 * (float)M_PI / 180 * 0.05f) < 1e-4f);
+    /* smooth at another speed: 240 degrees a second */
+    reset();
+    in = n; in.first_person = 1; in.smooth_dps = 240; in.stick[2] = 1; step(in, 10);
+    o = step(in, 10); assert(fabsf(o.yaw - 240 * (float)M_PI / 180 * 0.01f) < 1e-4f);
+    /* first person, the right stick pushed up jumps: X held at least 100 ms and until the stick is below half, one push one jump */
+    reset();
+    in = n; in.first_person = 1; in.stick_jump = 1; in.snap_deg = 30; step(in, 10);
+    in.stick[3] = 0.9f; o = step(in, 10); assert((o.bits & BIT(X)) && o.yaw == 0 && o.stick[3] == 0);
+    in.stick[3] = 0.4f; o = step(in, 50); assert(o.bits & BIT(X));                 /* held the first 100 ms */
+    o = step(in, 60); assert(!(o.bits & BIT(X)));
+    in.stick[3] = 0.9f; o = step(in, 10); assert(!(o.bits & BIT(X)));              /* not back in the middle: no second jump */
+    in.stick[3] = 0; step(in, 10);
+    in.stick[3] = 0.9f; o = step(in, 10); assert(o.bits & BIT(X));
+    o = step(in, 500); assert(o.bits & BIT(X));                                    /* held while pushed */
+    in.stick[3] = 0; o = step(in, 10); assert(!(o.bits & BIT(X)));
+    /* a push sideways (a turn) is no jump, even when it then goes up */
+    in.stick[2] = 0.9f; in.stick[3] = 0.2f; o = step(in, 10); assert(!(o.bits & BIT(X)) && o.yaw != 0);
+    in.stick[2] = 0.2f; in.stick[3] = 0.9f; o = step(in, 10); assert(!(o.bits & BIT(X)));
+    in.stick[2] = 0; in.stick[3] = 0; step(in, 10);
+    in.stick[2] = 0.6f; in.stick[3] = 0.8f; o = step(in, 10); assert(!(o.bits & BIT(X)));   /* more than 30 degrees off up */
+    /* off, or third person, or the wheel open: no jump */
+    reset();
+    in = n; in.first_person = 1; in.stick[3] = 0.9f; o = step(in, 10); assert(!(o.bits & BIT(X)));
+    reset();
+    in = n; in.stick_jump = 1; in.stick[3] = 0.9f; o = step(in, 10); assert(!(o.bits & BIT(X)) && o.stick[3] == 0.9f);
+    reset();
+    in = n; in.first_person = 1; in.stick_jump = 1; in.wheel_open = 1; in.stick[3] = 0.9f; o = step(in, 10); assert(!(o.bits & BIT(X)));
+    /* the game's quick select: a clean left stick click holds L until the next click */
+    reset();
+    in = n; in.first_person = 1; in.quick_select = 1; in.buttons = OOT_PAD_LSTICK; o = step(in, 10); assert(!o.bits);
+    in.buttons = 0; o = step(in, 10); assert(o.bits == BIT(L));                    /* no L3: L held */
+    o = step(in, 1000); assert(o.bits == BIT(L));
+    in.first_person = 0; o = step(in, 10); assert(o.bits == BIT(L));                /* the game's menu has the view: still held */
+    in.first_person = 1;
+    in.buttons = OOT_PAD_LSTICK; step(in, 10); in.buttons = 0; o = step(in, 10); assert(!(o.bits & BIT(L)) && !(o.bits & BIT(L3)));
+    /* ... or the left stick pushed out and back: let go (the game takes the item) */
+    in.buttons = OOT_PAD_LSTICK; step(in, 10); in.buttons = 0; o = step(in, 10); assert(o.bits == BIT(L));
+    in.stick[0] = 0.9f; o = step(in, 10); assert(o.bits & BIT(L));
+    in.stick[0] = 0.1f; o = step(in, 10); assert(!(o.bits & BIT(L)));
+    /* ... or 15 s */
+    in.stick[0] = 0; in.buttons = OOT_PAD_LSTICK; step(in, 10); in.buttons = 0; o = step(in, 10); assert(o.bits == BIT(L));
+    o = step(in, 15000); assert(!(o.bits & BIT(L)));
+    /* off, or third person: the click is L3 as before */
+    reset();
+    in = n; in.first_person = 1; in.buttons = OOT_PAD_LSTICK; step(in, 10); in.buttons = 0; o = step(in, 10); assert(o.bits == BIT(L3));
+    reset();
+    in = n; in.quick_select = 1; in.buttons = OOT_PAD_LSTICK; step(in, 10); in.buttons = 0; o = step(in, 10); assert(o.bits == BIT(L3));
     /* third person: the right stick is the game's */
     reset();
     in = n; in.stick[2] = 0.7f; in.stick[3] = 0.4f; o = step(in, 10); assert(o.stick[2] == 0.7f && o.stick[3] == 0.4f && !o.yaw);
@@ -84,6 +131,12 @@ int main(void) {
     o = step(in, 10); assert(!o.toggle_wheel && !(o.bits & BIT(A)));
     o = step(n, 10); assert(!(o.bits & BIT(L3)));
     in = n; in.buttons = OOT_PAD_A; o = step(in, 200); assert(o.bits == BIT(A) && !o.toggle_wheel);   /* A alone is the game's A */
+    /* the left stick pressed + B: the equipment wheel, and that B is not the game's */
+    reset();
+    in = n; in.buttons = OOT_PAD_LSTICK; step(in, 10);
+    in.buttons = OOT_PAD_LSTICK | OOT_PAD_B; o = step(in, 10); assert(o.toggle_gear && !o.toggle_wheel && !(o.bits & BIT(B)));
+    o = step(in, 10); assert(!o.toggle_gear && !(o.bits & BIT(B)));
+    o = step(n, 10); assert(!(o.bits & BIT(L3)));
     /* open, the right stick is the wheel's: it does not turn the view and does not reach the game */
     reset();
     in = n; in.wheel_open = 1; in.first_person = 1; in.snap_deg = 30; in.stick[2] = 0.9f; in.stick[3] = 0.2f;
@@ -103,6 +156,6 @@ int main(void) {
     /* closed, nothing of it: the stick is the game's and the view's again */
     reset();
     in = n; in.stick[2] = 0.9f; o = step(in, 10); assert(o.stick[2] == 0.9f && o.wheel_stick[0] == 0 && o.wheel_stick[1] == 0);
-    puts("OOT Quest controller map: buttons, Menu tap / hold, the left-stick shift, turning, the move direction, the item wheel");
+    puts("OOT Quest controller map: buttons, Menu tap / hold, the left-stick shift, turning and its speed, the jump on the right stick, the game's quick select, the move direction, the item wheel");
     return 0;
 }

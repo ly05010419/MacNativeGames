@@ -6,6 +6,7 @@
 extern int runtime_oot_vr_weapon(float game[12], uintptr_t *actor) __attribute__((weak_import));
 extern void runtime_oot_vr_weapon_place(const float target[12]) __attribute__((weak_import));
 extern int runtime_oot_vr_blade_sample(const float point[3], const float axis[3], float speed, float arc) __attribute__((weak_import));
+extern int runtime_oot_vr_blade_touched(void) __attribute__((weak_import));   /* games/oot/runtime/oot_vr_touch.h: the blade touched a target */
 #include "../../../../zeldaVR/runtime/oot_vr_blade.h"
 int vr_oot_blade(void);         /* totk_vr.m: the blade makes its own hits (the VR page) */
 int vr_oot_swing_speed(void);   /* totk_vr.m: tenths of m/s the blade must reach for a swing */
@@ -57,6 +58,7 @@ static void oot_weapon_frame(const uint8_t *src, const float to_world[12], const
    and turning nor the head's own movement is in it. The blade runs along the actor's z. Once a game frame. */
 static float g_oot_room_scale;   /* game units per metre of the player (oot_body_palette) */
 static void oot_blade_publish(const float actor[12], int hand) {
+    if (runtime_oot_vr_blade_touched && runtime_oot_vr_blade_touched()) vr_link_send_haptic(hand, 50000000ull, 170, 0.7f);   /* a contact (HookshotVR: 0.7 for 50 ms) */
     if (!runtime_oot_vr_blade_sample || !(g_oot_room_scale > 0.05f) || S.ubo[0][0].size != 13568) return;
     /* once a game frame: the weapon's palette is made for more than one pass of a frame (blade3: two samples 11 ms apart with
        the same place, and the second one ended every swing) */

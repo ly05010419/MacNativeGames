@@ -90,6 +90,12 @@ int main(void) {
     h[1].tip_speed = 3.0f; o = step(10); assert(!(o.bits & OOT_GEST_Y) && !o.buzz[1]);
     s.blade = 0; h[1].tip_speed = 0.5f; step(300);
     h[1].tip_speed = 3.0f; o = step(10); assert(o.bits & OOT_GEST_Y);            /* without it the swing is the button again */
+    /* the draw by the game's own call (vr.md row 46): no Y, once, and the hand holds the sword as before */
+    reset(); s.blade = 1; s.draw_call = 1;
+    h[1].f = -0.1f; h[1].r = 0.2f; h[1].u = 0.1f; h[1].grip = 0.9f;
+    o = step(10); assert(o.draw && !(o.bits & OOT_GEST_Y) && s.sword && o.buzz[1]);
+    o = step(10); assert(!o.draw && !(o.bits & OOT_GEST_Y));
+    h[1].grip = 0.1f; o = step(10); assert(!s.sword && (o.bits & OOT_GEST_AWAY) && !o.draw);
     puts("OOT motion controls: draw, swing, put away, shield, pick up and put down");
     return 0;
 }

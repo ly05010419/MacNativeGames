@@ -9,24 +9,37 @@ static int has(const int rows[], int n, int item) { for (int k = 0; k < n; k++) 
 int main(void) {
     uint8_t owned[OOT_WHEEL_ITEM_COUNT]; int rows[OOT_WHEEL_SLOTS];
     memset(owned, 0, sizeof owned);
-    assert(oot_wheel_list(owned, 1, rows) == 0);
+    assert(oot_wheel_list(owned, 1, 0, rows) == 0);
 
     /* a child with sticks, nuts, the slingshot, two bomb bags' worth of names, a bottle, and (never his) a bow */
     owned[row_of("Item_DekuStick")] = owned[row_of("Item_DekuNut")] = owned[row_of("Weapon_Range_SlingShot")] = 1;
     owned[row_of("Item_BombBag_Small")] = owned[row_of("Item_BombBag_Medium")] = 1;
     owned[row_of("Weapon_Range_Bow")] = 1;
     for (int i = 0; i < OOT_WHEEL_ITEM_COUNT; i++) if (OOT_WHEEL_ITEMS[i].item == 14) owned[i] = 1;
-    int n = oot_wheel_list(owned, 1, rows);
+    int n = oot_wheel_list(owned, 1, 0, rows);
     assert(n == 5 && has(rows, n, 0) && has(rows, n, 1) && has(rows, n, 4) && has(rows, n, 2) && has(rows, n, 14) && !has(rows, n, 30));
     /* the same things as an adult: no stick, no slingshot, the bow */
-    n = oot_wheel_list(owned, 0, rows);
+    n = oot_wheel_list(owned, 0, 0, rows);
     assert(n == 4 && has(rows, n, 30) && has(rows, n, 1) && has(rows, n, 2) && has(rows, n, 14) && !has(rows, n, 0) && !has(rows, n, 4));
     /* the Longshot takes the Hookshot's place */
-    owned[row_of("Item_Hookshot")] = 1; n = oot_wheel_list(owned, 0, rows); assert(has(rows, n, 5));
-    owned[row_of("Item_Longshot")] = 1; n = oot_wheel_list(owned, 0, rows); assert(has(rows, n, 6) && !has(rows, n, 5));
+    owned[row_of("Item_Hookshot")] = 1; n = oot_wheel_list(owned, 0, 0, rows); assert(has(rows, n, 5));
+    owned[row_of("Item_Longshot")] = 1; n = oot_wheel_list(owned, 0, 0, rows); assert(has(rows, n, 6) && !has(rows, n, 5));
     /* everything owned still fits the slots, each game item once */
-    memset(owned, 1, sizeof owned); n = oot_wheel_list(owned, 0, rows); assert(n <= OOT_WHEEL_SLOTS);
+    memset(owned, 1, sizeof owned); n = oot_wheel_list(owned, 0, 0, rows); assert(n <= OOT_WHEEL_SLOTS);
     for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) assert(OOT_WHEEL_ITEMS[rows[a]].item != OOT_WHEEL_ITEMS[rows[b]].item);
+
+    /* the equipment wheel: only gear, by age; the Giant's Knife gone once Biggoron's Sword is owned, the broken one once either is */
+    memset(owned, 0, sizeof owned);
+    owned[row_of("Weapon_Sword_Kokiri")] = owned[row_of("Weapon_Shield_Deku")] = owned[row_of("Weapon_Shield_Hylian")] = owned[row_of("Item_DekuStick")] = 1;
+    n = oot_wheel_list(owned, 1, 1, rows);
+    assert(n == 3 && has(rows, n, 1001) && has(rows, n, 1011) && has(rows, n, 1012) && !has(rows, n, 0));
+    for (int k = 0; k < n; k++) assert(OOT_WHEEL_ITEMS[rows[k]].gear);
+    n = oot_wheel_list(owned, 1, 0, rows); assert(n == 1 && has(rows, n, 0));     /* the item wheel has no gear */
+    owned[row_of("Weapon_Sword_BrokenGiant")] = owned[row_of("Weapon_Sword_Master")] = 1;
+    n = oot_wheel_list(owned, 0, 1, rows); assert(has(rows, n, 1005) && has(rows, n, 1002) && has(rows, n, 1012) && !has(rows, n, 1001));
+    owned[row_of("Weapon_Sword_Giant")] = 1; n = oot_wheel_list(owned, 0, 1, rows); assert(has(rows, n, 1004) && !has(rows, n, 1005));
+    owned[row_of("Weapon_Sword_Biggoron")] = 1; n = oot_wheel_list(owned, 0, 1, rows); assert(has(rows, n, 1003) && !has(rows, n, 1004) && !has(rows, n, 1005));
+    memset(owned, 1, sizeof owned); n = oot_wheel_list(owned, 0, 1, rows); assert(n <= OOT_WHEEL_SLOTS);
 
     /* the stick: slot 0 up, then clockwise */
     assert(oot_wheel_slot_of(0, 1, 4) == 0 && oot_wheel_slot_of(1, 0, 4) == 1 && oot_wheel_slot_of(0, -1, 4) == 2 && oot_wheel_slot_of(-1, 0, 4) == 3);

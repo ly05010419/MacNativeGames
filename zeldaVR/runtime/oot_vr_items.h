@@ -10,10 +10,16 @@
 
 enum { OOT_ITEM_MATRICES = 64, OOT_ITEM_SHAPES = 16 };
 
+/* side: what a palette entry is, for the string in the player's hand (oot_vr_string.h): OOT_ITEM_WOOD, 0 / 1 a string or strap
+   bone hanging from that side's tip, OOT_ITEM_POUCH the pouch (the belt and the seed in it). tip_entry, tip_rest: each side's tip
+   (the slingshot's Ph_String_3, the bow's String_1). bow: a bow's model (no pouch). */
+enum { OOT_ITEM_WOOD = -1, OOT_ITEM_POUCH = 2 };
 typedef struct {
-    unsigned palette_bytes, matrices, shapes, root_entry, center_entry;
+    unsigned palette_bytes, matrices, shapes, root_entry, center_entry, tip_entry[2];
     unsigned verts[OOT_ITEM_SHAPES];
-    float center_rest[3], share[OOT_ITEM_MATRICES];
+    float center_rest[3], share[OOT_ITEM_MATRICES], tip_rest[2][3];
+    signed char side[OOT_ITEM_MATRICES];
+    int bow;
 } oot_item_rig;
 
 static inline int oot_item_side(const char *name) {
@@ -34,16 +40,18 @@ static inline int oot_item_entry(const oot_bfres *m, int bone) {
 }
 static inline const char *oot_item_shares(const oot_bfres *m, const float *world, int belt, const int anchor[2], const int center[2], oot_item_rig *out) {
     float tip[2][3], middle[2][3];
-    for (int s = 0; s < 2; s++) { oot_item_at(world, anchor[s], tip[s]); oot_item_at(world, center[s], middle[s]); }
+    for (int s = 0; s < 2; s++) { oot_item_at(world, anchor[s], tip[s]); oot_item_at(world, center[s], middle[s]); memcpy(out->tip_rest[s], tip[s], sizeof tip[s]); }
+    for (unsigned k = 0; k < out->matrices; k++) out->side[k] = OOT_ITEM_WOOD;
     for (unsigned b = 0; b < m->bone_count; b++) {
         oot_bfres_bone bone; const char *e = oot_bfres_bone_at(m, b, &bone);
         if (e) return e;
         float share = 0, at[3]; oot_item_at(world, (int)b, at);
         const int side = oot_item_side(bone.name);
-        if ((int)b == belt || !strcmp(bone.name, "Ph_DekuSeed_1")) share = 1;
-        else if (side >= 0 && oot_item_on_string(bone.name)) share = oot_hold_share(at, tip[side], middle[side]);
-        if (bone.smooth >= 0 && (unsigned)bone.smooth < out->matrices) out->share[bone.smooth] = share;
-        if (bone.rigid >= 0 && (unsigned)bone.rigid < out->matrices) out->share[bone.rigid] = share;
+        int what = OOT_ITEM_WOOD;
+        if ((int)b == belt || !strcmp(bone.name, "Ph_DekuSeed_1")) { share = 1; what = OOT_ITEM_POUCH; }
+        else if (side >= 0 && oot_item_on_string(bone.name)) { share = oot_hold_share(at, tip[side], middle[side]); what = side; }
+        if (bone.smooth >= 0 && (unsigned)bone.smooth < out->matrices) { out->share[bone.smooth] = share; out->side[bone.smooth] = (signed char)what; }
+        if (bone.rigid >= 0 && (unsigned)bone.rigid < out->matrices) { out->share[bone.rigid] = share; out->side[bone.rigid] = (signed char)what; }
     }
     return NULL;
 }
@@ -59,7 +67,10 @@ static inline const char *oot_item_prepare(const oot_bfres *m, oot_item_rig *out
     if (root < 0 || anchor[0] < 0 || anchor[1] < 0 || center[0] < 0 || center[1] < 0) return "no string in this model";
     const int root_entry = oot_item_entry(m, root), center_entry = oot_item_entry(m, center[0]);
     if (root_entry < 0 || center_entry < 0) return "the string has no palette entry";
+    const int tip_l = oot_item_entry(m, anchor[0]), tip_r = oot_item_entry(m, anchor[1]);
+    if (tip_l < 0 || tip_r < 0 || (unsigned)tip_l >= out->matrices || (unsigned)tip_r >= out->matrices) return "the string's tips have no palette entry";
     out->root_entry = (unsigned)root_entry; out->center_entry = (unsigned)center_entry;
+    out->tip_entry[0] = (unsigned)tip_l; out->tip_entry[1] = (unsigned)tip_r; out->bow = belt < 0;
     out->shapes = m->shape_count < OOT_ITEM_SHAPES ? m->shape_count : OOT_ITEM_SHAPES;
     for (unsigned s = 0; s < out->shapes; s++) {
         oot_bfres_shape shape; const char *e = oot_bfres_shape_at(m, s, &shape);

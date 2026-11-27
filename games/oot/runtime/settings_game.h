@@ -197,6 +197,30 @@ int vr_oot_near_depth(void);
 void vr_oot_set_near_depth(int v);
 int vr_oot_reticle(void);
 void vr_oot_set_reticle(int on);
+int vr_oot_turn_speed(void);
+void vr_oot_set_turn_speed(int dps);
+int vr_oot_stick_jump(void);
+void vr_oot_set_stick_jump(int on);
+int vr_oot_move_head(void);
+void vr_oot_set_move_head(int on);
+int vr_oot_hud_deg(void);
+void vr_oot_set_hud_deg(int v);
+int vr_oot_screen_deg(void);
+void vr_oot_set_screen_deg(int v);
+int vr_oot_wrist_size(void);
+void vr_oot_set_wrist_size(int v);
+int vr_oot_wrist_any(void);
+void vr_oot_set_wrist_any(int on);
+int vr_oot_reticle_size(void);
+void vr_oot_set_reticle_size(int v);
+int vr_oot_wheel_hand(void);
+void vr_oot_set_wheel_hand(int on);
+int vr_oot_hand_marks(void);
+void vr_oot_set_hand_marks(int on);
+int vr_oot_detail(void);
+void vr_oot_set_detail(int v);
+int vr_oot_quick_select(void);
+void vr_oot_set_quick_select(int on);
 int vr_oot_events_eyes(void);
 void vr_oot_set_events_eyes(int on);
 int vr_oot_blade(void);
@@ -205,6 +229,52 @@ int vr_oot_swing_speed(void);
 void vr_oot_set_swing_speed(int v);
 int vr_oot_swing_arc(void);
 void vr_oot_set_swing_arc(int v);
+int vr_oot_bow_grip(void);
+void vr_oot_set_bow_grip(int on);
+int vr_oot_string_input(void);
+void vr_oot_set_string_input(int v);
+int vr_oot_bow_size(void);
+void vr_oot_set_bow_size(int v);
+int vr_oot_arrow_fx(void);
+void vr_oot_set_arrow_fx(int v);
+int vr_oot_eye_cm(void);
+void vr_oot_set_eye_cm(int cm);
+int vr_oot_crawl(void);
+void vr_oot_set_crawl(int on);
+int vr_oot_crawl_pose(void);
+void vr_oot_set_crawl_pose(int on);
+int vr_oot_crawl_cm(void);
+void vr_oot_set_crawl_cm(int cm);
+int vr_oot_held_grip(void);
+void vr_oot_set_held_grip(int on);
+int vr_oot_legs(void);
+void vr_oot_set_legs(int on);
+int vr_oot_wear(void);
+void vr_oot_set_wear(int on);
+int vr_oot_worn(void);
+void vr_oot_set_worn(int on);
+int vr_oot_hookshot_hands(void);
+void vr_oot_set_hookshot_hands(int on);
+int vr_oot_boomerang_hands(void);
+void vr_oot_set_boomerang_hands(int on);
+int vr_oot_boomerang_throw(void);
+void vr_oot_set_boomerang_throw(int v);
+int vr_oot_bottle_hands(void);
+void vr_oot_set_bottle_hands(int on);
+int vr_oot_bomb_hands(void);
+void vr_oot_set_bomb_hands(int on);
+int vr_oot_bomb_throw_mode(void);
+void vr_oot_set_bomb_throw_mode(int v);
+int vr_oot_bomb_strength(void);
+void vr_oot_set_bomb_strength(int v);
+int vr_oot_bomb_pull(void);
+void vr_oot_set_bomb_pull(int on);
+int vr_oot_bomb_reach_dm(void);
+void vr_oot_set_bomb_reach_dm(int v);
+int vr_oot_bomb_cone(void);
+void vr_oot_set_bomb_cone(int v);
+int vr_oot_bomb_flowers(void);
+void vr_oot_set_bomb_flowers(int on);
 void vr_set_motion(int on);
 /* Third-person camera distance (zeldaVR, user 2026-10-26: "在第三人称 时候 调整 摄像机距离 ... 在设置里 我可以设置"):
    1.4.3's camera hook (game_patches_v143.c) moves the camera along its view; with VR and without. Other versions have
@@ -225,6 +295,12 @@ static void settings_camera_rows(NSMutableArray<TOTKSettingRow *> *rows) {
     settings_text("近 4 米","4 m closer"),settings_text("近 5 米","5 m closer")],   /* user 2026-10-26: "改成 近1m 近2m 近3m 近4m 近5m" */
   @[@0,@-100,@-200,@-300,@-400,@-500],^int{return runtime_camera_distance_cm();},^(int v){runtime_camera_distance_set(v);})];
 }
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+#include "settings_vr_gear.h"   /* the sword and the shield in the hands (vr.md rows 42-53) */
+#endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+#include "settings_vr_scene.h"
+#endif
 static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  if(!vr_enabled())return;
  [rows addObject:settings_row(settings_text("VR 设置 · 视角","VR · view"),@[settings_text("第一人称","First person"),settings_text("第三人称","Third person")],@[@1,@0],
@@ -252,12 +328,27 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  [rows addObject:settings_row(settings_text("立体（深度重投影）","Stereo (from the depth)"),nil,nil,^int{return vr_dstereo();},^(int v){vr_set_dstereo(v);})];
  [rows addObject:settings_row(settings_text("立体 · 近处（手和剑）","Stereo · close to the eyes (hands, sword)"),@[settings_text("弱（边缘缝隙小）","Low (small gaps at edges)"),settings_text("中","Medium"),settings_text("全","Full")],@[@0,@1,@2],
   ^int{return vr_oot_near_depth();},^(int v){vr_oot_set_near_depth(v);})];
+ [rows addObject:settings_row(settings_text("模型细节距离","Model detail distance"),@[settings_text("和游戏一样（推荐）","As the game has it (recommended)"),settings_text("近一些（省性能）","Closer (faster)"),
+   settings_text("远一些","Further"),settings_text("最远","Furthest"),settings_text("关（按头显的视场算，最粗）","Off (by the headset's angle, coarsest)")],@[@0,@1,@2,@3,@4],
+  ^int{return vr_oot_detail();},^(int v){vr_oot_set_detail(v);})];
  [rows addObject:settings_row(settings_text("第一人称 · 身体","First person · body"),@[settings_text("只显示手臂","Arms only"),settings_text("不显示","None"),settings_text("整个身体","Whole body")],@[@0,@1,@2],
   ^int{return vr_oot_body_mode();},^(int v){vr_oot_set_body_mode(v);})];
  {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 你的臂长（厘米）","First person · your arm (cm)"),nil,nil,^int{return vr_oot_arm_cm();},^(int v){vr_oot_set_arm_cm(v);});
   r.sliderMin=30;r.sliderMax=80;[rows addObject:r];}
  {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 手部倾斜（度）","First person · hand tilt (degrees)"),nil,nil,^int{return vr_oot_hand_tilt();},^(int v){vr_oot_set_hand_tilt(v);});
   r.sliderMin=-60;r.sliderMax=60;[rows addObject:r];}
+ /* first person's eyes, legs, grips and what Link wears (rows 6, 12, 32, 34-37 of vr.md; totk_vr.m vr_oot_eye_cm and the rest) */
+ {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 眼睛高度（大人，厘米；小孩按比例；0 = 自动，同以前）","First person · eye height (adult, cm; a child's in proportion; 0 = automatic, as before)"),nil,nil,^int{return vr_oot_eye_cm();},^(int v){vr_oot_set_eye_cm(v);});
+  r.sliderMin=0;r.sliderMax=200;[rows addObject:r];}
+ [rows addObject:settings_row(settings_text("钻洞时视线降低","Crawl spaces: the eyes come down"),nil,nil,^int{return vr_oot_crawl();},^(int v){vr_oot_set_crawl(v);})];
+ [rows addObject:settings_row(settings_text("钻洞时手臂用游戏的爬行姿势","Crawl spaces: the arms take the game's crawl pose"),nil,nil,^int{return vr_oot_crawl_pose();},^(int v){vr_oot_set_crawl_pose(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("钻洞时的眼睛高度（厘米，0 = 游戏自己的）","Crawl eye height (cm, 0 = the game's own)"),nil,nil,^int{return vr_oot_crawl_cm();},^(int v){vr_oot_set_crawl_cm(v);});
+  r.sliderMin=0;r.sliderMax=50;[rows addObject:r];}
+ [rows addObject:settings_row(settings_text("第一人称 · 腿（往哪走就怎么迈步）","First person · legs (stepping the way you go)"),nil,nil,^int{return vr_oot_legs();},^(int v){vr_oot_set_legs(v);})];
+ [rows addObject:settings_row(settings_text("拿东西时的手指","Fingers on what a hand holds"),@[settings_text("游戏自己的握法","The game's own grip"),settings_text("跟着扳机和握把","Follow the trigger and grip")],@[@1,@0],
+  ^int{return vr_oot_held_grip();},^(int v){vr_oot_set_held_grip(v);})];
+ [rows addObject:settings_row(settings_text("外衣、手套、手镯跟着 VR 手臂","Tunics, gauntlets, the bracelet on the VR arms"),nil,nil,^int{return vr_oot_wear();},^(int v){vr_oot_set_wear(v);})];
+ [rows addObject:settings_row(settings_text("第一人称不画身上戴的（袋子、靴子、面具）","First person leaves out what he wears (bags, boots, masks)"),nil,nil,^int{return vr_oot_worn();},^(int v){vr_oot_set_worn(v);})];
  [rows addObject:settings_row(settings_text("左手模式（持剑手换左手）","Left-handed (the sword in the left hand)"),nil,nil,^int{return vr_oot_left_handed();},^(int v){vr_oot_set_left_handed(v);})];
  /* the sword's hits (user 2026-11-23: "只要 模型剑 碰到怪物 就算击中"; totk_vr.m vr_oot_blade) */
  [rows addObject:settings_row(settings_text("剑的命中","The sword's hits"),@[settings_text("剑刃挥到哪里就打中哪里","Where the blade goes"),settings_text("挥剑 = 按攻击键","A swing presses the attack button")],@[@1,@0],
@@ -266,13 +357,51 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   r.sliderMin=10;r.sliderMax=60;[rows addObject:r];}
  {TOTKSettingRow *r=settings_row(settings_text("挥剑 · 挥动距离（厘米）","A swing · how far (cm)"),nil,nil,^int{return vr_oot_swing_arc();},^(int v){vr_oot_set_swing_arc(v);});
   r.sliderMin=10;r.sliderMax=60;[rows addObject:r];}
+ settings_vr_gear_rows(rows);
+ /* the items held in the hands, first person (vr.md rows 63-67; games/oot/runtime/oot_vr_hand_items.h) */
+ [rows addObject:settings_row(settings_text("钩爪拿在手里（握把取出，扳机瞄准、松开发射）","Hookshot in the hand (grip takes it, trigger aims, let go fires)"),nil,nil,^int{return vr_oot_hookshot_hands();},^(int v){vr_oot_set_hookshot_hands(v);})];
+ [rows addObject:settings_row(settings_text("回旋镖拿在手里（握把取出，扳机瞄准、松开扔出）","Boomerang in the hand (grip takes it, trigger aims, let go throws)"),nil,nil,^int{return vr_oot_boomerang_hands();},^(int v){vr_oot_set_boomerang_hands(v);})];
+ [rows addObject:settings_row(settings_text("回旋镖 · 用什么瞄准","Boomerang · aim with"),@[settings_text("拿镖的手","The hand holding it"),settings_text("空着的手","The empty hand"),settings_text("头显","The headset")],@[@0,@1,@2],
+  ^int{return vr_oot_boomerang_throw();},^(int v){vr_oot_set_boomerang_throw(v);})];
+ [rows addObject:settings_row(settings_text("炸弹拿在手里（握把取出，扳机点火）","Bombs in the hands (grip takes one, trigger lights it)"),nil,nil,^int{return vr_oot_bomb_hands();},^(int v){vr_oot_set_bomb_hands(v);})];
+ [rows addObject:settings_row(settings_text("炸弹 · 怎么扔","Bombs · throwing"),@[settings_text("松开握把就扔","Let go of the grip"),settings_text("再握一次才扔","Squeeze again")],@[@0,@1],
+  ^int{return vr_oot_bomb_throw_mode();},^(int v){vr_oot_set_bomb_throw_mode(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("炸弹 · 扔的力度（%）","Bombs · throw strength (%)"),nil,nil,^int{return vr_oot_bomb_strength();},^(int v){vr_oot_set_bomb_strength(v);});
+  r.sliderMin=50;r.sliderMax=400;[rows addObject:r];}
+ [rows addObject:settings_row(settings_text("炸弹 · 隔空抓（张开手对着它，再握）","Bombs · pull from afar (open palm at it, then grip)"),nil,nil,^int{return vr_oot_bomb_pull();},^(int v){vr_oot_set_bomb_pull(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("炸弹 · 隔空抓的距离（分米）","Bombs · pull reach (dm)"),nil,nil,^int{return vr_oot_bomb_reach_dm();},^(int v){vr_oot_set_bomb_reach_dm(v);});
+  r.sliderMin=10;r.sliderMax=80;[rows addObject:r];}
+ {TOTKSettingRow *r=settings_row(settings_text("炸弹 · 隔空抓的角度（度）","Bombs · pull aim (degrees)"),nil,nil,^int{return vr_oot_bomb_cone();},^(int v){vr_oot_set_bomb_cone(v);});
+  r.sliderMin=3;r.sliderMax=45;[rows addObject:r];}
+ [rows addObject:settings_row(settings_text("炸弹 · 炸弹花（要哥隆手镯）","Bombs · Bomb Flowers (with the Goron's Bracelet)"),nil,nil,^int{return vr_oot_bomb_flowers();},^(int v){vr_oot_set_bomb_flowers(v);})];
+ [rows addObject:settings_row(settings_text("瓶子拿在手里（握把取出，扳机使用）","Bottles in the hand (grip takes it out, trigger uses it)"),nil,nil,^int{return vr_oot_bottle_hands();},^(int v){vr_oot_set_bottle_hands(v);})];
  /* hearts, magic and rupees on the back of the wrist, looked at as a watch (zeldaVR/gfx/oot_vr_wrist_draw.h) */
  [rows addObject:settings_row(settings_text("手腕面板（抬起手腕看心、魔力、卢比）","Wrist panel (hearts, magic, rupees on the wrist)"),nil,nil,^int{return vr_oot_wrist();},^(int v){vr_oot_set_wrist(v);})];
+ [rows addObject:settings_row(settings_text("手腕面板 · 大小","Wrist panel · size"),@[settings_text("小","Small"),settings_text("中","Medium"),settings_text("大","Large")],@[@0,@1,@2],
+  ^int{return vr_oot_wrist_size();},^(int v){vr_oot_set_wrist_size(v);})];
+ [rows addObject:settings_row(settings_text("手腕面板 · 哪只手腕","Wrist panel · which wrist"),@[settings_text("不拿剑的那只","The one without the sword"),settings_text("两只都行（看哪只就在哪只）","Either (the one looked at)")],@[@0,@1],
+  ^int{return vr_oot_wrist_any();},^(int v){vr_oot_set_wrist_any(v);})];
  /* the item wheel: what Link owns in a ring before the player, chosen with the right stick (zeldaVR/gfx/oot_vr_wheel_draw.h) */
  [rows addObject:settings_row(settings_text("道具轮盘（按住左摇杆 + A 打开，右摇杆选）","Item wheel (left stick pressed + A, right stick chooses)"),nil,nil,^int{return vr_oot_wheel();},^(int v){vr_oot_set_wheel(v);})];
- [rows addObject:settings_row(settings_text("对话、开门时的视角","Talks and doors"),@[settings_text("保持自己的眼睛","Keep my own eyes"),settings_text("用游戏的镜头","The game's camera")],@[@1,@0],
-  ^int{return vr_oot_events_eyes();},^(int v){vr_oot_set_events_eyes(v);})];
+ [rows addObject:settings_row(settings_text("道具轮盘 · 在哪里打开","Item wheel · where it opens"),@[settings_text("面前","Before the eyes"),settings_text("右手上方","Over the right hand")],@[@0,@1],
+  ^int{return vr_oot_wheel_hand();},^(int v){vr_oot_set_wheel_hand(v);})];
+ settings_vr_scene_rows(rows);   /* scenes (cutscenes, item gets, re-align) and the ocarina in the hands: settings_vr_scene.h */
  [rows addObject:settings_row(settings_text("瞄准准星（弹弓、弓）","Aim mark (slingshot, bow)"),nil,nil,^int{return vr_oot_reticle();},^(int v){vr_oot_set_reticle(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("瞄准准星的大小（%）","Aim mark size (%)"),nil,nil,^int{return vr_oot_reticle_size();},^(int v){vr_oot_set_reticle_size(v);});
+  r.sliderMin=40;r.sliderMax=300;[rows addObject:r];}
+ /* the bow and the slingshot in the two hands (zeldaVR/gfx/oot_vr_bow_ctl.h; off by default: the play players have now) */
+ [rows addObject:settings_row(settings_text("弓、弹弓 · 握把拿起和拿着（松手收起）","Bow, slingshot · a grip takes and holds it (letting go puts it away)"),nil,nil,^int{return vr_oot_bow_grip();},^(int v){vr_oot_set_bow_grip(v);})];
+ [rows addObject:settings_row(settings_text("弓、弹弓 · 用什么抓弦","Bow, slingshot · what grabs the string"),@[settings_text("扳机或握把","Trigger or grip"),settings_text("扳机","Trigger"),settings_text("握把","Grip"),settings_text("不抓弦（道具键拉弓发射，同以前）","No string (the item button draws and shoots, as before)")],@[@0,@1,@2,@3],
+  ^int{return vr_oot_string_input();},^(int v){vr_oot_set_string_input(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("弓的大小（%）","Bow size (%)"),nil,nil,^int{return vr_oot_bow_size();},^(int v){vr_oot_set_bow_size(v);});
+  r.sliderMin=80;r.sliderMax=200;[rows addObject:r];}
+ {TOTKSettingRow *r=settings_row(settings_text("火、冰、光之箭的效果（%）","Fire, ice and light arrow effects (%)"),nil,nil,^int{return vr_oot_arrow_fx();},^(int v){vr_oot_set_arrow_fx(v);});
+  r.sliderMin=0;r.sliderMax=100;[rows addObject:r];}
+ {TOTKSettingRow *r=settings_row(settings_text("HUD 面板的宽度（度）","HUD panel width (degrees)"),nil,nil,^int{return vr_oot_hud_deg();},^(int v){vr_oot_set_hud_deg(v);});
+  r.sliderMin=30;r.sliderMax=100;[rows addObject:r];}
+ {TOTKSettingRow *r=settings_row(settings_text("标题、菜单、过场屏幕的宽度（度）","Title, menu and cutscene screen width (degrees)"),nil,nil,^int{return vr_oot_screen_deg();},^(int v){vr_oot_set_screen_deg(v);});
+  r.sliderMin=60;r.sliderMax=160;[rows addObject:r];}
+ [rows addObject:settings_row(settings_text("调试 · 在手柄位置画小方块","Debug · a mark at each controller"),nil,nil,^int{return vr_oot_hand_marks();},^(int v){vr_oot_set_hand_marks(v);})];
  /* the comfort ring: a dark ring that narrows the view while it moves in a way the head did not (first person) */
  {NSArray<NSString *> *causes=@[settings_text("舒适暗角 · 走动时","Comfort ring · while walking"),settings_text("舒适暗角 · 转身时","Comfort ring · while turning"),
    settings_text("舒适暗角 · 跳下、下落时","Comfort ring · in the air"),settings_text("舒适暗角 · 被游戏带着移动时","Comfort ring · when the game moves you")];
@@ -286,6 +415,15 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  [rows addObject:settings_row(settings_text("体感操作（挥剑、举盾、拉弓、手势）","Motion controls (swing, shield, bow, gestures)"),nil,nil,^int{return vr_motion();},^(int v){vr_set_motion(v);})];
  [rows addObject:settings_row(settings_text("转身方式","Turning"),@[settings_text("平滑","Smooth"),settings_text("分段（小）","Snap (small)"),settings_text("分段（中）","Snap (medium)"),settings_text("分段（大）","Snap (large)")],
   @[@0,@120,@200,@300],^int{return vr_snap_ms();},^(int v){vr_set_snap_ms(v);})];
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+ [rows addObject:settings_row(settings_text("平滑转身的速度","Smooth turning speed"),@[settings_text("慢（每秒 60 度）","Slow (60 degrees a second)"),settings_text("中（每秒 120 度）","Medium (120 degrees a second)"),
+   settings_text("快（每秒 180 度）","Fast (180 degrees a second)"),settings_text("很快（每秒 240 度）","Very fast (240 degrees a second)")],@[@60,@120,@180,@240],
+  ^int{return vr_oot_turn_speed();},^(int v){vr_oot_set_turn_speed(v);})];
+ [rows addObject:settings_row(settings_text("第一人称 · 右摇杆上推 = 跳","First person · right stick up jumps"),nil,nil,^int{return vr_oot_stick_jump();},^(int v){vr_oot_set_stick_jump(v);})];
+ [rows addObject:settings_row(settings_text("第一人称 · 单击左摇杆 = 游戏的快速选择","First person · a left stick click opens the game's quick select"),nil,nil,^int{return vr_oot_quick_select();},^(int v){vr_oot_set_quick_select(v);})];
+ [rows addObject:settings_row(settings_text("第一人称 · 左摇杆往哪走","First person · the left stick walks"),@[settings_text("往头看的方向","Where the head looks"),settings_text("往身体朝的方向","Where the body faces")],@[@1,@0],
+  ^int{return vr_oot_move_head();},^(int v){vr_oot_set_move_head(v);})];
+#endif
  static const int sizes[][2]={{1344,1408},{1680,1760},{1920,2048},{2048,2208}};
  NSArray<NSString *> *names=@[settings_text("1344×1408（流畅，72 帧）","1344×1408 (smooth, 72 Hz)"),
   settings_text("1680×1760（推荐，72 帧）","1680×1760 (recommended, 72 Hz)"),

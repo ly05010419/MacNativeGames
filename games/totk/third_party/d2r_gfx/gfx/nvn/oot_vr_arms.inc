@@ -7,6 +7,9 @@
 #include "../../../../zeldaVR/runtime/oot_vr_pose.h"
 #include "../../../../zeldaVR/runtime/oot_vr_hold.h"
 #include "../../../../zeldaVR/runtime/oot_vr_items.h"
+#include "../../../../zeldaVR/runtime/oot_vr_stature.h"
+float vr_oot_crawl_amount(void);   /* totk_vr.m: how far into a crawl the eyes are; the arms take the game's crawl pose as far */
+#include "../../../../zeldaVR/runtime/oot_vr_handitem.h"
 int vr_oot_arm_cm(void);        /* totk_vr.m: the player's arm, shoulder to wrist */
 int vr_oot_hand_tilt(void);     /* totk_vr.m: degrees the hand is turned about the controller's side axis */
 int vr_oot_holding(void);       /* totk_vr.m: something is in the hand */
@@ -168,11 +171,44 @@ static uint8_t *oot_palette_ring(uint64_t size, uint64_t *gpu) {
     *gpu = ring_gpu + at; at += need;
     return to;
 }
+/* The hands for the items held in them (games/oot/runtime/oot_vr_hand_items.h, vr.md rows 63-67), from the same controllers as the
+   arms: each hand's grip, velocity, pointing line and palm in the game's world, its trigger and grip, where it is from the head in the
+   room; the head's eye and forward in the world. Sent once a frame. */
+extern void runtime_oot_vr_hands_world(const oot_ih_frame *f) __attribute__((weak_import));
+static void oot_hand_for_items(int side, const oot_arm_target *t, const vr_hand *hand, const vr_pose *head, const vr_controls *pad,
+                               const float qi[4], const float view[12], const float off[3], float scale, oot_ih_hand *o) {
+    float v_c[3], pf[3]; const float ahead[3] = { 0, 0, -1 };
+    memset(o, 0, sizeof *o);
+    for (int i = 0; i < 3; i++) o->pos[i] = t->grip[i] + off[i];
+    oot_q_rotate(qi, hand->v, v_c);
+    for (int i = 0; i < 3; i++) v_c[i] *= scale;
+    oot_cam_dir_to_palette(view, v_c, o->vel);
+    oot_ih_pointing(side, t->forward, t->up, o->dir);
+    for (int i = 0; i < 3; i++) o->palm[i] = -t->up[i];   /* the back of the hand's opposite */
+    o->trigger = side ? pad->rtrig : pad->ltrig; o->grip = side ? pad->rgrip : pad->lgrip;
+    oot_q_rotate(head->q, ahead, pf);
+    const float n = sqrtf(pf[0] * pf[0] + pf[2] * pf[2]), d[3] = { hand->p[0] - head->p[0], hand->p[1] - head->p[1], hand->p[2] - head->p[2] };
+    if (n > 1e-3f) { const float fx = pf[0] / n, fz = pf[2] / n; o->f = d[0] * fx + d[2] * fz; o->r = -d[0] * fz + d[2] * fx; o->u = d[1]; }
+    o->have = oot_ih_unit(o->dir) && oot_ih_unit(o->palm) && oot_ih_hand_ok(o);
+}
+static void oot_hands_for_items_send(oot_ih_frame *f, const float view[12]) {
+    static uint64_t sent = UINT64_MAX;
+    const uint64_t frame = atomic_load(&g_cur_frame);
+    if (!runtime_oot_vr_hands_world || sent == frame) return;
+    sent = frame;
+    const float zero[3] = { 0, 0, 0 }, ahead[3] = { 0, 0, -1 };
+    oot_cam_to_palette(view, zero, zero, f->eye); oot_cam_dir_to_palette(view, ahead, f->fwd);   /* no offset: the world itself */
+    f->have_head = oot_ih_finite(f->eye, 3) && oot_ih_unit(f->fwd);
+    runtime_oot_vr_hands_world(f);
+}
 #include "oot_vr_whole.inc"
 #include "oot_vr_props.inc"
+#include "oot_vr_wear.inc"
+#include "oot_vr_legs.inc"
 /* The palette with the arms on the controllers, in a ring of ours; 0 leaves the game's. */
 static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
     if (vr_oot_body_mode() != 0) return 0;
+    if (size != 13440 && size != 13488) return oot_wear_palette(src, size);   /* a tunic or gauntlets (oot_vr_wear.inc) */
     const oot_rig *r = oot_rig_for(size);
     if (!r) return 0;
     oot_rig_arms *arms = &g_oot_arms[r == &g_oot_rigs[0] ? 0 : 1];
@@ -205,19 +241,33 @@ static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
     oot_ik_cross(fw_c, up_c, rt_c);
     oot_arm_matrices done[2]; int have[2] = { 0, 0 };
     const float tilt = (float)vr_oot_hand_tilt() * (float)M_PI / 180;
+    oot_ih_frame for_items; memset(&for_items, 0, sizeof for_items);
     for (int side = 0; side < 2; side++) {
         if (!hands[side].have) continue;
         oot_arm_target t;
         oot_arm_target_for(side, &hands[side], &head, &pad, view, off, scale, up_c, fw_c, rt_c, tilt, side == input->main_hand && input->holding, &t);
         have[side] = oot_arm_matrices_solve(&arms->rest[side], &t, &done[side]);
+        oot_hand_for_items(side, &t, &hands[side], &head, &pad, qi, view, off, scale, &for_items.hand[side]);
     }
+    oot_hands_for_items_send(&for_items, view);
     if (!have[0] && !have[1]) return 0;
+    const int ri = r == &g_oot_rigs[0] ? 0 : 1;
+    oot_grip_fingers(ri, arms, src, size, done, have);   /* a hand that holds something: the game's own grip (oot_vr_wear.inc) */
+    static uint64_t crawl_frame = UINT64_MAX; static float crawl_now;   /* read once a frame: his depth and colour draws must match */
+    if (crawl_frame != input->frame) { crawl_frame = input->frame; crawl_now = oot_crawl_pose_weight(vr_oot_crawl_amount()); }
+    const float crawl = crawl_now;   /* in a crawl space: the game's own crawl pose, on hands and knees */
+    { static int crawled; if ((crawl > 0.5f) != crawled) { crawled = crawl > 0.5f; MLOG("[vr-crawl] first person: Link's arms %s", crawled ? "take the game's crawl pose" : "follow the controllers again"); } }
     uint64_t gpu = 0; uint8_t *to = oot_palette_ring(size, &gpu);
     memcpy(to, src, (size_t)size);
     for (unsigned k = 0; k < r->m.smooth_count && (uint64_t)(k + 1) * 48 <= size; k++) {
         const oot_rig_part p = arms->parts[k];
-        if (p.part != OOT_PART_NONE && have[p.side]) memcpy(to + (size_t)k * 48, oot_part_matrix(&done[p.side], p.part), 48);
+        if (p.part == OOT_PART_NONE || !have[p.side]) continue;
+        if (oot_wear_collapsed(src + (size_t)k * 48)) continue;   /* a part the game hides (its default sleeves under another tunic): hidden */
+        if (crawl > 0) { float m[12], game[12]; memcpy(game, src + (size_t)k * 48, 48); oot_matrix_lerp(oot_part_matrix(&done[p.side], p.part), game, crawl, m); memcpy(to + (size_t)k * 48, m, 48); }
+        else memcpy(to + (size_t)k * 48, oot_part_matrix(&done[p.side], p.part), 48);
     }
+    { float fw_p[3]; oot_cam_dir_to_palette(view, fw_c, fw_p); oot_legs_pose(ri, src, to, size, fw_p, off, crawl); }   /* the legs (oot_vr_legs.inc) */
+    oot_arm_frame_note(ri, arms, src, size, done, have, off, crawl);
     { float chest[3] = { 0, 0, 0 };
       if (arms->chest_matrix >= 0) { float c[12]; memcpy(c, src + (size_t)arms->chest_matrix * 48, 48); oot_m_apply(c, arms->chest_rest, chest); for (int i = 0; i < 3; i++) chest[i] += off[i]; }
       for (int side = 0; side < 2; side++) {

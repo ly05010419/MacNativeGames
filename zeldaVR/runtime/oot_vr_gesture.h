@@ -20,11 +20,12 @@ enum { OOT_GEST_A = 1, OOT_GEST_AWAY = 2, OOT_GEST_Y = 4, OOT_GEST_ZL = 8 };
 typedef struct {
     int started, closed[2], sword, shield, carrying, carry_hand, swing_armed;
     int blade;   /* set by the caller: the blade makes its own hits (oot_vr_blade.h), so a swing presses no button */
+    int draw_call;   /* set by the caller: the draw is the game's own call (games/oot/runtime/oot_vr_stance.h), not Y (vr.md row 46) */
     uint64_t y_until, a_from, a_until, b_until, last_swing, open_since, peak_at, stick_until;
     float carry_peak, peak_f, peak_r, throw_r, throw_f;
 } oot_gesture_state;
 
-typedef struct { uint32_t bits; int buzz[2]; int has_stick; float stick[2]; } oot_gesture_out;
+typedef struct { uint32_t bits; int buzz[2]; int has_stick; float stick[2]; int draw; } oot_gesture_out;   /* draw: the sword drawn by the call */
 
 static inline int oot_gesture_behind(const oot_hand *h, int right) {
     return h->f < -0.02f && h->u > -0.42f && h->u < 0.30f && fabsf(h->r) < 0.50f && (right ? h->r > -0.05f : h->r < 0.05f);
@@ -47,7 +48,7 @@ static inline void oot_gesture_step(oot_gesture_state *s, uint64_t now, const oo
     if (hands[R].have) {
         const oot_hand *h = &hands[R];
         if (closing[R] && oot_gesture_behind(h, 1) && !s->carrying) {
-            if (!s->sword) { s->sword = 1; s->y_until = now + PULSE; s->swing_armed = 0; s->last_swing = now; out->buzz[R] = 1; }
+            if (!s->sword) { s->sword = 1; if (s->draw_call) out->draw = 1; else s->y_until = now + PULSE; s->swing_armed = 0; s->last_swing = now; out->buzz[R] = 1; }
         }
         if (s->sword) {
             if (s->swing_armed && h->tip_speed > 2.4f && now - s->last_swing >= GAP) {
