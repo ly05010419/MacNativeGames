@@ -977,7 +977,9 @@ def build(args, source):
     print('native-runtime',flush=True)
     build_runtime(work,logs/'native-runtime.log',2,env)
     icon_spec=GAME/'assets/app-icon.json'   # the dump has no Control data: the pinned official image, as Donkey Kong Bananza
-    if icon_spec.is_file():run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
+    if icon_spec.is_file():   # optional: a pinned image gone from the store (#2401) only costs the icon, never the build
+     try:run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
+     except subprocess.CalledProcessError:print('   no app icon, the app gets the default one (logs/app-icon.log says why)',flush=True)
     mode='full' if device else shader_mode()
     if mode=='none':print('Shaders are not bundled (OOT_BUNDLE_SHADERS=0): translated at first use',flush=True)
     else:

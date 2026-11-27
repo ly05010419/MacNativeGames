@@ -107,6 +107,10 @@ class LauncherSource(unittest.TestCase):
         # the top-level tests/ is named only by the root Makefile (make check, the source gate of a checkout); the
         # games' own tests/ folders are kept
         pattern = re.compile(r'games/(%s)\b|\bwindows_games/' % '|'.join(map(re.escape, self.left_out)))
+        # a path joined onto games/ (HERE.parent / 'by3/third_party/d2r'): the folder's name starts the string. 2026-11-27,
+        # #2413: Odyssey's prepare_runtime.py read Bowser's Fury's relr.py this way, which the pattern above did not see,
+        # and every Launcher build of Odyssey stopped at step 5/8 ("No module named 'relr'")
+        joined = re.compile(r'^(%s)/' % '|'.join(map(re.escape, self.left_out)))
         found = []
         for name in self.files:
             path = REPO / name
@@ -118,7 +122,7 @@ class LauncherSource(unittest.TestCase):
                 except (SyntaxError, UnicodeDecodeError):
                     continue
                 for node in ast.walk(tree):
-                    if isinstance(node, ast.Constant) and isinstance(node.value, str) and pattern.search(node.value):
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str) and (pattern.search(node.value) or joined.match(node.value)):
                         if node.value.strip().startswith(('"""', "'''")) or len(node.value) > 200:   # a docstring
                             continue
                         found.append(f'{name}:{node.lineno} {node.value[:80]!r}')

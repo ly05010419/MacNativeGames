@@ -2976,7 +2976,7 @@ def record_ns2_device_build(tree, out, g, args):
                   source_sha256={str(p.relative_to(tree)): sha256(p) for p in sorted(sources) if p.is_file()},
                   output_sha256={str(p): sha256(p) for p in sorted(set(outputs))})
     icon_spec = g['folder'] / 'assets/app-icon.json'
-    if icon_spec.is_file():
+    if icon_spec.is_file() and (tree / 'build/AppIcon.icns').is_file():
         record['app_icon'] = dict(source=json.loads(icon_spec.read_text()), source_spec_sha256=sha256(icon_spec),
                                   icns_sha256=sha256(tree / 'build/AppIcon.icns'))
     out.with_name(out.stem + '-build-record.json').write_text(json.dumps(record, indent=2) + '\n')
@@ -3047,8 +3047,11 @@ def main_ns2(args, dump):
     icon_spec = g['folder'] / 'assets/app-icon.json'
     if icon_spec.is_file():
         # the work tree's Python: extract_app_icon imports extract_exefs, which needs cryptography (only in the venv)
-        run([tree / '.venv/bin/python', 'scripts/extract_app_icon.py', '--source-spec', icon_spec, '--output', 'build/AppIcon.icns'],
-            logs / 'app_icon.log', cwd=tree, env=env)
+        try:   # optional, as the icon from control data: a pinned image gone from the store (#2401) only costs the icon
+            run([tree / '.venv/bin/python', 'scripts/extract_app_icon.py', '--source-spec', icon_spec, '--output', 'build/AppIcon.icns'],
+                logs / 'app_icon.log', cwd=tree, env=env)
+        except BuildError as e:
+            say(f'   no app icon, the app gets the default one ({str(e).splitlines()[0]})')
     say('2/4 data and 4/4 binary: building the game binary, its tables and the launcher')
     step_binary(tree, None, None, {**env, 'SHADER_LIST': f'../{g["folder"].name}/assets/shader_list.tsv'}, logs, version=v)
     step_shaders_ns2(tree, g, logs)

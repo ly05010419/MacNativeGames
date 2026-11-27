@@ -11,8 +11,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(HERE.parent / 'by3/third_party/d2r'))
-from relr import decode_relr
+from relr import decode_relr   # scripts/relr.py, Odyssey's own copy (#2413: the Launcher carries no games/by3)
 
 VERSION = 'local'
 EXPECTED = json.loads((HERE / 'assets/expected-local-update.json').read_text())

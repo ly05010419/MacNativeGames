@@ -205,6 +205,17 @@ class Play(Base):
         self.assertEqual(play(runner, TOTK, self.tmp / 'gone.app', self.paths, 'yes').reason, 'no_app')
         self.assertEqual(runner.calls, [])
 
+    def test_a_version_without_start_options_still_opens(self):
+        # #2385: Tears of the Kingdom 1.0.0 (v0) has no Launcher start options; Start game opened nothing. It opens the app
+        # as it is, with nothing passed
+        app = self.app('v0')
+        runner = Runner()
+        result = play(runner, TOTK, app, self.paths, 'yes')
+        self.assertEqual((result.ok, result.env), (True, {}))
+        self.assertEqual(runner.calls[0][0], ['/usr/bin/open', str(app)])
+        self.hold_slot('TOTK')
+        self.assertEqual(play(Runner(), TOTK, app, self.paths, 'yes').reason, 'running')
+
     def test_open_failing(self):
         app = self.app('v143')
         result = play(Runner(Outcome.NONZERO), TOTK, app, self.paths, 'yes')

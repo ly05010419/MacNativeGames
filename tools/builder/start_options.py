@@ -244,11 +244,13 @@ def env_for(state, gpu):
 
 def play(runner, spec, app, paths, gpu):
     state = read_state(spec, app, paths)
-    if state.reason:
+    # A version without start options (Tears of the Kingdom 1.0.0, #2385) still starts: as the app is, nothing passed.
+    # Only a missing app is a refusal.
+    if state.reason and state.reason != 'unknown_version':
         return PlayResult(False, state.reason)
     if game_state.game_running(paths.data / spec.data_folder):
         return PlayResult(False, 'running')
-    env = env_for(state, gpu)
+    env = env_for(state, gpu) if not state.reason else {}
     argv = ['/usr/bin/open'] + [a for k, v in sorted(env.items()) for a in ('--env', f'{k}={v}')] + [str(app)]
     result = runner.run(argv, timeout_s=OPEN_S)
     if result.outcome is not Outcome.OK:
