@@ -39,6 +39,7 @@ static uint64_t g_gen_shown;            // interpolated frames handed to the scr
 #include "nvn_refl.h"
 #include "nvn_texture_plan.h"
 #include "fps_overlay.h"
+#include "fps_board.h"   /* the leaderboard's frame-rate record (shared, as games/odyssey and games/acnh): game frames after the world started */
 #include "nvn_cover.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN：本源码树期望的 B 着色器库翻译链版本 | DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree
 #include "nvn_hmap.h"
@@ -102,6 +103,8 @@ static id<MTLTexture> g_fps_tex[4];
 static id<MTLBuffer> g_fps_uv[3];
 static struct { fps_overlay_info info; int scale; } g_fps_key[4] = {{{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}};
 static _Atomic int g_pic_big;   /* the game picture (its crop) is bigger than 1920x1080: true 2K (" 2K" in the FPS box) */
+static _Atomic uint64_t g_pic_src;   /* the last game frame's size presented (crop): height << 32 | width, for the HUD */
+static _Atomic uint32_t g_board_out_w, g_board_out_h;   /* the last game frame's size on screen (the present viewport), for the leaderboard (mtl_board_view) */
 static int g_fps_box[4][2];
 // TOTK load line (bottom-right, load_overlay_prepare; totk_sysload.c): same slots as the FPS box, a wider texture.
 static id<MTLTexture> g_load_tex[4];
@@ -724,6 +727,7 @@ int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_
 // ---------- Submission ----------
 static void defer_reset(void); static void defer_fallback(void);
 typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; void *vis; int qlog; float sph[4]; } post_op;   // vis：kind 3 的可见性槽表 | vis: the visibility slot table for kind 3; qlog / sph: "querylog" diagnostic
+static _Atomic int g_sync_log;   // "flag sync_log <n>": log the next n render-target notes of stor_wr_note and their copies
 static _Atomic int g_occl_vis; static _Atomic long g_ql_until = -1;   // TOTK occlusion diagnostics (see dm_gfx_querylog_next)
 void dm_gfx_querylog_next(long n); void dm_gfx_passdump_next(long n); void dm_gfx_texdump_next(const char *path);
 // ---------- 遮挡查询（NVN_COUNTER_TYPE_SAMPLES_PASSED）----------
@@ -1950,6 +1954,21 @@ uint64_t mtl_sub_commit(void) {
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
+        uint64_t ts_clock = gpu_ticks();
+#ifdef GAME_LM3
+        /* Luigi's Mansion 3 sizes its dynamic resolution from two TIMESTAMP reports, at the start and the end of a frame's
+           GPU work (1920x1080 down to 1600x900). Stamped with the host clock when each submission completed, their
+           difference also counted the time between the frame's submissions, so the game lowered the resolution all the
+           time; with the GPU's working time it still did during door transitions (room loading). The Mac GPU renders a
+           frame in a few milliseconds, so by default the clock stands still: the game measures no GPU time and keeps
+           1920x1080. LM3_GPU_CLOCK=gpu advances it by each submission's GPU time, LM3_GPU_CLOCK=host is the host clock. */
+        { static int mode = -1; if (mode < 0) { const char *gc = getenv("LM3_GPU_CLOCK"); mode = gc && !strcmp(gc, "host") ? 2 : gc && !strcmp(gc, "gpu") ? 1 : 0;
+              MLOG("GPU timestamps: %s (LM3_GPU_CLOCK)", mode == 2 ? "host clock" : mode == 1 ? "advance by GPU working time" : "fixed, the dynamic resolution stays at its maximum"); }
+          static _Atomic uint64_t vclock; uint64_t z = 0; atomic_compare_exchange_strong(&vclock, &z, ts_clock);
+          double busy = cb.GPUEndTime - cb.GPUStartTime; uint64_t add = mode == 1 && busy > 0 && busy < 1 ? (uint64_t)(busy * 19200000.0) : 0;
+          uint64_t v = atomic_fetch_add(&vclock, add) + add;
+          if (mode != 2) ts_clock = v; }
+#endif
         int nq = 0, nzero = 0;   // TOTK_OCCL_AUTODUMP: occlusion queries of this submission and how many reported 0
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
@@ -1966,7 +1985,7 @@ uint64_t mtl_sub_commit(void) {
             }
             // TOTK: NVNcounterData = {counter, timestamp}; TIMESTAMP / TIMESTAMP_TOP reports write counter 0 (the timestamp is the second word).
             // The game's conditional clears depend on that 0 (see cond_eval); other unimplemented counter types also report 0.
-            else { uint64_t t = gpu_ticks(), rec[2] = {0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
+            else { uint64_t t = ts_clock, rec[2] = {0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
         }
         free(ops);
         /* TOTK_OCCL_AUTODUMP=<dir>: when every occlusion query of a frame reported 0 (the game then culls all queried
@@ -2106,9 +2125,17 @@ static int ser_unaffected(uint64_t from, uint64_t to, uint64_t serial) {
    when its memory pool is finalised. TOTK_TEX_SHARE=0 restores one texture per serial. */
 int nvn_fmt_bpb(int format, int *bw, int *bh);
 typedef struct { uint64_t mem, size; uint32_t w, h, d, levels, target, samples, bpb, depth_fmt; } stor_key;   // 48 bytes, no padding
-typedef struct { stor_key k; void *tex; uint64_t idle_fence; uint64_t *ser; int nser, cser; } stor_ent;      // tex: CFBridgingRetain'ed base texture; ser: serials holding it or a view on it
+typedef struct { stor_key k; void *tex; uint64_t idle_fence; uint64_t *ser; int nser, cser; uint64_t wr; } stor_ent;      // tex: CFBridgingRetain'ed base texture; ser: serials holding it or a view on it
 static nvn_hmap g_by_storage = {.klen = sizeof(stor_key)};   // stor_key -> stor_ent *
 static nvn_hmap g_stor_of_obj = {.klen = 8};                  // base texture / view pointer -> stor_ent *
+/* Entries of one storage address (g_smu). Different sizes at one address are separate Metal textures whose contents do
+   not follow each other, while on hardware they are the same bytes: a render pass that writes one copies its overlap
+   into the others when it ends (stor_wr_sync; Luigi's Mansion 3's dynamic resolution renders a 1920x1080 target and
+   samples the same memory as 1843x1037: the door transition was black). */
+typedef struct { int n; stor_ent *e[8]; } stor_sib;
+static nvn_hmap g_stor_mem = {.klen = 8};                      // storage address -> stor_sib *
+static uint64_t g_stor_synced, g_stor_inited, g_stor_wr_epoch;   // wr: g_stor_wr_epoch when a render pass last wrote the entry
+static stor_key g_init_pend[8]; static int g_ninit_pend;          // entries published beside a written sibling: filled from it (stor_init_flush)
 static uint64_t g_stor_entries, g_stor_shared, g_stor_viewed, g_stor_recreated, g_stor_swept, g_stor_dropped;
 /* Texture preparation runs before a draw captures its encoder. An upgrade discovered under the
    registry lock requests a pass split; the caller ends the pass outside that lock and retries. */
@@ -2358,6 +2385,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "deferred")) { extern void nvn_set_deferred_binds(int on); nvn_set_deferred_binds(v); return; }
     if (!strcmp(name, "framewait")) { extern void nvn_set_framewait(int on); nvn_set_framewait(v); return; }
     if (!strcmp(name, "uncapped_interval")) { extern void nvn_set_uncapped_interval(int on); nvn_set_uncapped_interval(v); return; }
+    if (!strcmp(name, "sync_log")) { atomic_store(&g_sync_log, v); MLOG("[flag] sync_log = %d", v); return; }
     if (!strcmp(name, "occl_visible")) { atomic_store(&g_occl_vis, v); MLOG("[flag] occl_visible = %d", v); return; }
     if (!strcmp(name, "drvfill")) { atomic_store(&g_drvfill_on, v != 0); MLOG("[flag] drvfill = %d", v != 0); return; }
     if (!strcmp(name, "ubo_snapshot")) { (void)usnap_on(); atomic_store(&g_usnap_on, v != 0); MLOG("[flag] ubo_snapshot = %d", v != 0); return; }
@@ -2625,6 +2653,9 @@ static void stor_release_holders_locked(stor_ent *e) {
 }
 static void stor_drop_locked(stor_ent *e) {
     stor_release_holders_locked(e);
+    { stor_sib *sb = nvn_hm_get(&g_stor_mem, &e->k.mem);
+      if (sb) { for (int i = 0; i < sb->n; i++) if (sb->e[i] == e) { sb->e[i] = sb->e[--sb->n]; break; }
+                if (!sb->n) { nvn_hm_del(&g_stor_mem, &e->k.mem); free(sb); } } }
     uint64_t bk = (uint64_t)(uintptr_t)e->tex; nvn_hm_del(&g_stor_of_obj, &bk); nvn_hm_del(&g_by_storage, &e->k);
     defer_obj_release((__bridge id)e->tex); CFRelease(e->tex);
     free(e->ser); free(e);
@@ -2760,8 +2791,85 @@ static void stor_publish(const tex_t *t, id<MTLTexture> mt) {
         stor_ent *e = calloc(1, sizeof *e); if (!e) MDIE("storage entry");
         e->k = k; e->tex = (void *)CFBridgingRetain(mt); e->idle_fence = g_fence;
         nvn_hm_put(&g_by_storage, &e->k, e); uint64_t ok = obj_key(mt); nvn_hm_put(&g_stor_of_obj, &ok, e); g_stor_entries++;
+        { stor_sib *sb = nvn_hm_get(&g_stor_mem, &k.mem); if (!sb) { sb = calloc(1, sizeof *sb); if (!sb) MDIE("storage siblings"); nvn_hm_put(&g_stor_mem, &k.mem, sb); }
+          if (sb->n < 8) sb->e[sb->n++] = e;
+          int written = 0; for (int i = 0; i < sb->n; i++) written |= sb->e[i] != e && sb->e[i]->wr;
+          if (written && g_ninit_pend < 8) g_init_pend[g_ninit_pend++] = k; }
+#ifdef GAME_LM3
+        /* Luigi's Mansion 3's dynamic resolution moves its render targets through a new size almost every frame at the
+           same storage (1.4.0: about ten targets, sizes 1920x1080 down to 1700x956 and their quarter sizes). An entry of
+           another size at this storage that no serial holds any more is a step the game left: it goes now (released after
+           the GPU's current work, like every drop) instead of after STOR_IDLE_SUBMITS, which kept 8 GB of old steps. */
+        static int sweep = -1; if (sweep < 0) { const char *se = getenv("LM3_STOR_SWEEP"); sweep = !se || atoi(se); if (!sweep) MLOG("LM3_STOR_SWEEP=0: storage entries of an older size are kept until idle (diagnostic)"); }
+        stor_ent *left[32]; int nleft = 0;
+        for (uint32_t i = 0; sweep && i < g_by_storage.cap && nleft < 32; i++) { stor_ent *o = g_by_storage.vals[i];
+            if (o && o != e && !o->nser && o->k.mem == k.mem && o->k.target == k.target && o->k.d == k.d && o->k.levels == k.levels &&
+                o->k.bpb == k.bpb && o->k.depth_fmt == k.depth_fmt && o->k.samples == k.samples && (o->k.w != k.w || o->k.h != k.h)) left[nleft++] = o; }
+        for (int i = 0; i < nleft; i++) stor_drop_locked(left[i]);
+        g_stor_swept += (uint64_t)nleft;
+#endif
     }
     pthread_mutex_unlock(&g_smu);
+}
+/* A render pass writes t (a colour target): when it ends, stor_wr_sync copies the written texture's overlap into the other
+   entries of its storage address (see g_stor_mem). Keys, not entries: an entry may be dropped before the pass ends. */
+static stor_key g_wr_pend[8]; static int g_nwr_pend;
+static void stor_wr_note(const tex_t *t) {
+    stor_key k; if (!stor_on() || !stor_key_of(t, &k) || k.samples > 1) return;
+    pthread_mutex_lock(&g_smu); stor_sib *sb = nvn_hm_get(&g_stor_mem, &k.mem); int nsib = sb ? sb->n : 0, many = nsib > 1;
+    stor_ent *we = nvn_hm_get(&g_by_storage, &k); if (we) we->wr = ++g_stor_wr_epoch; pthread_mutex_unlock(&g_smu);
+    { if (k.w >= 900 && atomic_load(&g_sync_log) > 0 && atomic_fetch_sub(&g_sync_log, 1) > 0) MLOG("[sync] F%llu target ser=%llu %ux%u at %p: %d entries at this storage", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)t->serial, k.w, k.h, (void *)(uintptr_t)k.mem, nsib); }
+    if (!many) return;
+    for (int i = 0; i < g_nwr_pend; i++) if (!memcmp(&g_wr_pend[i], &k, sizeof k)) return;
+    if (g_nwr_pend < 8) g_wr_pend[g_nwr_pend++] = k;
+}
+static void stor_wr_sync(void) {   // after the render pass ended (rp_end)
+    int n = g_nwr_pend; if (!n) return;
+    stor_key ks[8]; memcpy(ks, g_wr_pend, sizeof ks); g_nwr_pend = 0;
+    for (int i = 0; i < n; i++) {
+        id<MTLTexture> src = nil, dst[8]; int nd = 0;
+        pthread_mutex_lock(&g_smu);
+        stor_ent *e = nvn_hm_get(&g_by_storage, &ks[i]); stor_sib *sb = e ? nvn_hm_get(&g_stor_mem, &ks[i].mem) : NULL;
+        if (sb) { src = (__bridge id<MTLTexture>)e->tex;
+            for (int j = 0; j < sb->n; j++) { stor_ent *o = sb->e[j]; id<MTLTexture> ot = (__bridge id<MTLTexture>)o->tex;
+                if (o != e && o->k.samples == 1 && o->k.target == e->k.target && o->k.d == 1 && e->k.d == 1 && ot.pixelFormat == src.pixelFormat
+                    && ot.textureType == MTLTextureType2D && src.textureType == MTLTextureType2D && (o->k.w != e->k.w || o->k.h != e->k.h)) dst[nd++] = ot; } }
+        pthread_mutex_unlock(&g_smu);
+        for (int j = 0; j < nd; j++) {
+            NSUInteger w = MIN(src.width, dst[j].width), h = MIN(src.height, dst[j].height);
+            enc_b_copy_texture(blit(), src, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), dst[j], 0, 0, MTLOriginMake(0, 0, 0));
+            if (g_stor_synced++ < 4 || atomic_load(&g_sync_log) > 0) MLOG("storage %p: a render pass wrote the %lux%lu texture; its %lux%lu overlap copied into the %lux%lu texture of the same memory (%llu so far)",
+                (void *)(uintptr_t)ks[i].mem, (unsigned long)src.width, (unsigned long)src.height, (unsigned long)w, (unsigned long)h, (unsigned long)dst[j].width, (unsigned long)dst[j].height, (unsigned long long)g_stor_synced);
+        }
+    }
+}
+/* A texture created at a storage address where another size was already rendered starts with that content (on hardware it
+   is the same memory): without it Luigi's Mansion 3 showed black frames each time its dynamic resolution changed size. */
+static int stor_sibling_written(const tex_t *t) {
+    stor_key k; if (!stor_on() || !stor_key_of(t, &k)) return 0;
+    pthread_mutex_lock(&g_smu); stor_sib *sb = nvn_hm_get(&g_stor_mem, &k.mem); int w = 0;
+    if (sb) for (int i = 0; i < sb->n; i++) w |= sb->e[i]->wr != 0;
+    pthread_mutex_unlock(&g_smu); return w;
+}
+static void stor_init_flush(void) {   // no render pass open
+    int n = g_ninit_pend; if (!n || rp_active() || !on_sub_thread()) return;
+    stor_key ks[8]; memcpy(ks, g_init_pend, sizeof ks); g_ninit_pend = 0;
+    for (int i = 0; i < n; i++) {
+        id<MTLTexture> src = nil, dst = nil;
+        pthread_mutex_lock(&g_smu);
+        stor_ent *e = nvn_hm_get(&g_by_storage, &ks[i]); stor_sib *sb = e ? nvn_hm_get(&g_stor_mem, &ks[i].mem) : NULL;
+        if (sb && !e->wr) { dst = (__bridge id<MTLTexture>)e->tex; stor_ent *best = NULL;
+            for (int j = 0; j < sb->n; j++) { stor_ent *o = sb->e[j]; id<MTLTexture> ot = (__bridge id<MTLTexture>)o->tex;
+                if (o != e && o->wr && (!best || o->wr > best->wr) && o->k.samples == 1 && e->k.samples == 1 && ot.pixelFormat == dst.pixelFormat
+                    && ot.textureType == MTLTextureType2D && dst.textureType == MTLTextureType2D) best = o; }
+            if (best) { src = (__bridge id<MTLTexture>)best->tex; e->wr = best->wr; } }
+        pthread_mutex_unlock(&g_smu);
+        if (!src) continue;
+        NSUInteger w = MIN(src.width, dst.width), h = MIN(src.height, dst.height);
+        enc_b_copy_texture(blit(), src, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), dst, 0, 0, MTLOriginMake(0, 0, 0));
+        if (g_stor_inited++ < 4 || atomic_load(&g_sync_log) > 0) MLOG("storage %p: new %lux%lu texture starts with the %lux%lu overlap of the %lux%lu one rendered there (%llu so far)",
+            (void *)(uintptr_t)ks[i].mem, (unsigned long)dst.width, (unsigned long)dst.height, (unsigned long)w, (unsigned long)h, (unsigned long)src.width, (unsigned long)src.height, (unsigned long long)g_stor_inited);
+    }
 }
 /* Submission end: entries nobody has held for STOR_IDLE_SUBMITS submissions are dropped. */
 static void stor_collect_drop(int (^pick)(const stor_ent *), uint64_t *counter) {
@@ -3482,6 +3590,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
     id<MTLTexture> mt = stor_acquire(t, d);   // TOTK: another serial already has a texture at this storage with the same layout
     if (!mt) {
         if (g_tex_prepare_split) return nil; /* retry preserves the shared GPU content */
+        if (g_tex_preparing && rp_active() && stor_sibling_written(t)) { g_tex_prepare_split = 1; return nil; }   // created outside the pass, then filled (stor_init_flush)
         mt = [g_dev newTextureWithDescriptor:d];
         if (getenv("LM3_TEX_LOG")) { size_t zero = 0, n = t->mem ? (size_t)t->L.size : 0; for (size_t i = 0; i < n; i++) zero += !t->mem[i];
             int bw = 1, bh = 1, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); size_t zb = 0, nb = 0;
@@ -3506,7 +3615,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
             MLOG("[texnew] pool flags %#x host %d mirrored %d", t->pool ? t->pool->flags : 0u, t->pool ? (t->pool->host != NULL) : -1, tex_mirrored(t)); MLOG("[texnew] serial %llu %ux%ux%u lv%u fmt %#x target %d mem %p zero %zu/%zu zeroblocks %zu/%zu", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target, (void *)t->mem, zero, n, zb, nb); }
         if (!mt) { RED_ONCE(2, "建 MTLTexture 失败 %ux%u 格式 %#x 目标 %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
         res_add(mt);
-        stor_publish(t, mt);
+        stor_publish(t, mt); stor_init_flush();
     }
     serial_put(t->serial, mt);
     if (serial_is_dead(t->serial)) dead_put_note(t->serial);
@@ -4128,6 +4237,7 @@ static void rp_end(void) { if (g_enc) {
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
     sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
+    stor_wr_sync(); stor_init_flush();
     if (g_dc_nback) dc_write_back();
     if (g_astc_rb) { id<MTLTexture> src = g_astc_rb; g_astc_rb = nil; NSUInteger cols = (src.width + 7) / 8, rows = (src.height + 4) / 5;
         id<MTLBuffer> rb = [g_dev newBufferWithLength:cols * rows * 16 options:MTLResourceStorageModeShared]; res_add(rb);
@@ -4398,13 +4508,14 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     }
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && !(clear_only == 1 && !R.clear_c[i])) (void)attachment_texture(R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);   // TOTK: a storage-shared attachment may be recreated here (a blit), before the blit encoder is ended
     if (R.rt.depth) (void)attachment_texture(R.rt.depth, &R.rt.dview, R.rt.has_dview);
+    stor_init_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     MTL4RenderPassDescriptor *pd = [MTL4RenderPassDescriptor new];
     int any = 0;
     for (int i = 0; i < R.rt.n; i++) {
         if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue;
         attach(pd.colorAttachments[i], R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);
-        { const tex_t *ot = R.rt.color[i]; int was = gpu_owned(ot->serial); gpu_owned_mark(ot->serial);
+        { const tex_t *ot = R.rt.color[i]; int was = gpu_owned(ot->serial); gpu_owned_mark(ot->serial); stor_wr_note(ot);
           if (ot->mem && tex_mirrored(ot)) wb_note(ot);
           static int ownlog = -1; if (ownlog < 0) ownlog = getenv("DM_NVN_OWNLOG") != NULL;
           if (ownlog && !was && tex_mirrored(ot)) MLOG("[ownlog] ser=%llu %ux%ux%u lv%u nvnfmt=%#x flags=%#x pool=%p pflags=%#x mem=%p off=%lld: GPU-rendered texture in a CPU-visible pool", (unsigned long long)ot->serial,
@@ -6627,7 +6738,7 @@ static void warm_filled(void) {
    while playing (14 -> 28 ms per frame, 30 -> 20 fps). The next start goes over the list again; rows already in the
    cache take a few ms each. TOTK_WARM_LIGHT=0 turns it off. */
 static _Atomic int g_world_on;   // set at the first world frame (hle_nvn.c, nvnQueuePresentTexture)
-void mtl_note_world(void) { atomic_store(&g_world_on, 1); }
+void mtl_note_world(void) { atomic_store(&g_world_on, 1); fps_board_start(); }   // the leaderboard counts from the first world frame (fps_board.c)
 static void warm_light(void) {
 #if TARGET_OS_IPHONE
     const char *e = getenv("TOTK_WARM_LIGHT"); if (e && !atoi(e)) return;
@@ -10432,6 +10543,48 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);   // 本次提交跑完再放（视图不单独驻留，参数块撤驻留） | Release after this submit has finished running (views are not made resident separately; the parameter block is removed from residency)
     return 1;
 }
+/* Texture -> texture copy that a blit cannot do (another size, filtered or not, or another format): one render pass drawing
+   the source region into the destination region (Luigi's Mansion 3 shrinks a 1920x1080 frame to 160x90, LINEAR_FILTER). */
+static int copy_t2t_scaled(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const p_copy_t2t *c) {
+    static int failed; static id<MTL4ArgumentTable> at; static id<MTLSamplerState> samp[2]; static id<MTLLibrary> lib;
+    static id<MTLRenderPipelineState> ps[8]; static MTLPixelFormat pf[8]; static int nps;
+    if (failed || !(d.usage & MTLTextureUsageRenderTarget) || !(s.usage & MTLTextureUsageShaderRead)) return 0;
+    if (!lib) { NSError *e = nil;
+        static const char src[] = "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; float2 uv; };\n"
+            "vertex V vs(uint id [[vertex_id]]) { float2 q=float2((id<<1)&2,id&2); V o; o.p=float4(q*float2(2,-2)+float2(-1,1),0,1); o.uv=q; return o; }\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler sm [[sampler(0)]], constant float4 &r [[buffer(0)]]) { return t.sample(sm, r.xy + in.uv * r.zw); }\n";
+        lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1;
+        at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
+        for (int i = 0; i < 2; i++) { MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = i ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+            sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES; samp[i] = [g_dev newSamplerStateWithDescriptor:sd]; }
+        if (!lib || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("【红】缩放贴图拷贝的着色器 / 参数表建不出：%s", e.localizedDescription.UTF8String); return 0; } }
+    id<MTLTexture> dv = [d newTextureViewWithPixelFormat:d.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(dl, 1) slices:NSMakeRange(ds, 1)];
+    if (!dv) return 0;
+    id<MTLRenderPipelineState> p = nil;
+    for (int i = 0; i < nps; i++) if (pf[i] == dv.pixelFormat) p = ps[i];
+    if (!p) { NSError *e = nil; MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        pd.colorAttachments[0].pixelFormat = dv.pixelFormat; p = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!p) { RED_ONCE(48, "缩放贴图拷贝的管线建不出（格式 %lu）：%s", (unsigned long)dv.pixelFormat, e.localizedDescription.UTF8String); return 0; }
+        if (nps < 8) { pf[nps] = dv.pixelFormat; ps[nps++] = p; } }
+    id<MTLTexture> sv = [s newTextureViewWithPixelFormat:s.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss, 1)];
+    id<MTLBuffer> pb = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
+    if (!sv || !pb) return 0;
+    float *r = pb.contents; r[0] = (float)c->sr.xoffset / sv.width; r[1] = (float)c->sr.yoffset / sv.height; r[2] = (float)c->sr.width / sv.width; r[3] = (float)c->sr.height / sv.height;
+    res_add(pb);   // views are not made resident separately (their base textures are)
+    rp_end(); blit_close();
+    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = dv; rp.colorAttachments[0].loadAction = MTLLoadActionLoad; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rs_sync(); pt_mark(g_cb, 'R', rp); id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset(); if (!en) return 0;
+    [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [en setArgumentTable:at atStages:MTLRenderStageFragment];
+    [at setTexture:sv.gpuResourceID atIndex:0]; [at setSamplerState:samp[(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) ? 1 : 0].gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress atIndex:0];
+    [en setViewport:(MTLViewport){c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, 0, 1}]; [en setRenderPipelineState:p];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);
+    static int nlog; if (nlog++ < 3) MLOG("贴图→贴图缩放拷贝（渲染通道）：%dx%d→%dx%d 标志 %#x 格式 %lu→%lu，目标序号 %llu CPU 可见池 %d", c->sr.width, c->sr.height, c->dr.width, c->dr.height, c->flags, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat, (unsigned long long)c->dst->serial, c->dst->mem && tex_mirrored(c->dst));
+    return 1;
+}
 // GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
 static void copy_t2t(const p_copy_t2t *c) {
@@ -10447,6 +10600,11 @@ static void copy_t2t(const p_copy_t2t *c) {
     id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !d) return;
+    /* The GPU writes the destination, as a render pass writes its targets (see the render-pass setup): a texture in a
+       CPU-visible pool then has its content in the Metal texture, which ReadTexels and the pool write-back must take
+       (Luigi's Mansion 3 shrinks the frame to 160x90 for its save thumbnails and reads them on the CPU: they were black). */
+    gpu_owned_mark(c->dst->serial);
+    if (c->dst->mem && tex_mirrored(c->dst)) wb_note(c->dst);
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
     PD("t src=%llu lv%u sl%u xyz=%d,%d,%d dst=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d", c->src->serial, sl, sz0, c->sr.xoffset, c->sr.yoffset, c->sr.zoffset,
@@ -10460,6 +10618,8 @@ static void copy_t2t(const p_copy_t2t *c) {
     }
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
+        if (!s3 && !d3 && nz == 1 && (c->dr.depth ? c->dr.depth : 1) == 1 && !(c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
+            && copy_t2t_scaled(s, d, sl, sz0 + c->sr.zoffset, dl, dz0 + c->dr.zoffset, c)) return;
         RED_ONCE(33, "贴图→贴图拷贝未实现的形态：%dx%dx%d→%dx%dx%d 标志 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
                  c->flags, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat, s3, d3);
         return;
@@ -10915,6 +11075,13 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
 // with the same encoding as the present (present_encode) into an offscreen texture of the same size as the swapchain, and after the GPU finishes hands out a CGImage in the completion callback (the callback does not block the present). Guarded by g_shotq_mu
 static void (^g_grab_cb)(CGImageRef img);
 void mtl_grab_next_present(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
+// The game frame the player's capture button wants (screenshot.h, the frontend's screenshot_picture; as games/odyssey and games/acnh): at
+// the next present the source texture's crop (before the output upscale, no letterbox bars) is copied into a shared buffer, and the
+// feedback handler hands out a CGImage once the GPU is done (rows turned over for the lower-left origin, as dm_gfx_shot_at does); an
+// unexpected source format falls back to the whole-window (drawable) copy.
+#include "nvn_capture_region.h"
+static void (^g_grab_game_cb)(CGImageRef img);
+void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_game_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
 /* The window picture re-rendered offscreen by the legacy encoder: only for presents that draw no drawable
    (TOTK_PRESENT_SKIP measurement runs); a real present copies its drawable (present_now). */
 static void grab_present(void (^cb)(CGImageRef), id<MTLTexture> src, const int crop[4], CGSize sz) {
@@ -11315,6 +11482,15 @@ int mtl_display_hz(void) {
     return s ? [[s valueForKey:@"maximumFramesPerSecond"] intValue] : 0;
 #endif
 }
+/* The leaderboard's picture settings (runtime/board_upload.h, as games/odyssey and games/acnh): the output size (the game
+   frame's viewport on the drawable), the size the game renders at (the presented crop), and whether MetalFX upscaled one
+   of the last 30 game frames (the settings panel's Picture row). */
+void mtl_board_view(int *out_w, int *out_h, int *scene_w, int *scene_h, int *metalfx) {
+    uint64_t cur = atomic_load(&g_cur_frame), mfx_at = atomic_load(&g_mfxup_last), pic = atomic_load(&g_pic_src);
+    *out_w = (int)atomic_load(&g_board_out_w); *out_h = (int)atomic_load(&g_board_out_h);
+    *scene_w = (int)(pic & 0xffffffff); *scene_h = (int)(pic >> 32);
+    *metalfx = mfx_at && cur - mfx_at < 30;
+}
 static _Atomic uint64_t g_present_stall_ns;   // 单测用：出图线程每次出图前额外停顿（模拟 drawable 迟迟不可用） | For unit tests: an extra pause before each present on the present thread (simulating a drawable that stays unavailable)
 static CAMetalLayer *g_present_layer_resident;
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
@@ -11370,7 +11546,7 @@ static int fps_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float
    "SHADER +<variants new to the translation cache this run>/<variants in the cache> PSO +<pipelines added to the warm
    lists this run>", yellow for 3 s after something new was collected. Same texture size, font and scale as the FPS box. */
 static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
-    if (!fps_overlay_hints_enabled() || !shader_overlay_enabled() || slot < 0 || slot > 3 || !g_shd_tex[slot]) return 0;
+    if (!fps_overlay_full_hud() || !shader_overlay_enabled() || slot < 0 || slot > 3 || !g_shd_tex[slot]) return 0;
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     static uint8_t px[FPS_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
     uint64_t fresh = 0, last = 0; int64_t total = -1; totk_rt_counts(&fresh, &total, &last);
@@ -11378,7 +11554,13 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
     uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), newest = last > plast ? last : plast;
     char text[48]; shader_overlay_text(text, sizeof text, fresh, total, pso);
     int hl = newest && now - newest < 3000000000ull, scale = fps_overlay_scale(vp.height);
-    if (hud_compact()) { hud_publish(HUD_SHADER, text, hl); return 0; }
+    if (hud_compact()) {
+        char line[64]; pso_overlay_text(line, sizeof line, atomic_load(&g_collect_new[1]), (int64_t)g_pso.n);
+        hud_publish(HUD_SHADER, text, hl);
+        hud_publish(HUD_PSO, line, newest == plast && hl);   // yellow while a new render or compute pipeline was just collected
+        hitch_overlay_publish(now);   // "FPS 全信息": every long frame (hle_nvn.c notes them), the last ones split into their parts
+        return 0;
+    }
     pthread_mutex_lock(&mu);
     if (g_shd_key[slot].scale != scale || g_shd_key[slot].hl != hl || strcmp(g_shd_key[slot].text, text)) {
         fps_overlay_raster_line(text, hl, scale, px, &g_shd_box[slot][0], &g_shd_box[slot][1]);
@@ -11397,7 +11579,7 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
    "P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%  GPU 99% (70%)" -- performance / efficiency cores, the busiest thread, the GPU as macOS reports it (our
    keep-alive keeps it near 100 %) and in brackets the GPU time of the game's own work. Values from totk_sysload.c (0.5 s). */
 static int load_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
-    if (!fps_overlay_hints_enabled() || !sysload_enabled() || slot < 0 || slot > 3 || !g_load_tex[slot]) return 0;
+    if (!fps_overlay_full_hud() || !sysload_enabled() || slot < 0 || slot > 3 || !g_load_tex[slot]) return 0;
     sysload_start();
     sysload_info li; if (!sysload_get(&li)) return 0;
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -11552,6 +11734,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src_in, id
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01 || present_stretch()) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    if (crop) { atomic_store(&g_board_out_w, (uint32_t)lround(vp.width)); atomic_store(&g_board_out_h, (uint32_t)lround(vp.height)); }   // the output size the leaderboard records
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     id<MTLTexture> up = output_upscale(cb, src, cx, cy, cw, ch, vp, uv_i);   // TOTK 2K output: MetalFX to the viewport, drawn 1:1 below
     id<MTLTexture> pic = up ? up : src;
@@ -11790,8 +11973,10 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     /* TOTK: the FPS box counts game presents per second and, while MetalFX interpolates, the generated frames shown as
        well ("FPS 50+50"): the user found the plain displayed count misleading on the phone ("the number looks good, it
        feels slow"), so both are shown. */
-    if (interp >= 0) { fps_overlay_note_gen(++g_gen_shown, CACurrentMediaTime()); atomic_store(&g_mfxi_last, frame ? frame : 1); }
-    else fps_overlay_note(ticket, CACurrentMediaTime());
+    if (interp >= 0) { double now = CACurrentMediaTime(); fps_overlay_note_gen(++g_gen_shown, now); fps_board_note_gen(now); atomic_store(&g_mfxi_last, frame ? frame : 1); }
+    else { double now = CACurrentMediaTime(); fps_overlay_note(ticket, now);
+        /* the board counts what the FPS box counts, the game's presents: a picture shown again is no frame, and its time goes to the next new one */
+        static uint64_t board_ticket; if (ticket != board_ticket) { board_ticket = ticket; fps_board_note(ticket, now); } }
     if (g_use != USE_OFF && g_use != USE_DONE) use_tick();
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
         if (g_present_n == 1) g_bp_first_present = bp_now() - g_bp_t0;
@@ -11971,18 +12156,19 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     window_shot_tick(g_present_n);
     /* TOTK: whole-window shots (wshot, TOTK_WINDOW_SHOT) copy the drawable itself after the present has drawn into it: what
        the screen shows, MetalFX output upscale and boxes included (grab_present re-renders only for TOTK_PRESENT_SKIP). */
-    void (^grab)(CGImageRef) = nil; NSString *grab_src = nil;
-    if (g_grab_cb && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil;
-        if (g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
+    void (^grab)(CGImageRef) = nil; void (^grab_game)(CGImageRef) = nil; NSString *grab_src = nil;
+    if ((g_grab_cb || g_grab_game_cb) && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil; grab_game = g_grab_game_cb; g_grab_game_cb = nil;
+        if (grab && g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
     /* TOTK_PRESENT_SKIP=1 (measurement only): never take a drawable, so the render pipeline's own frame rate shows (the window
        does not update). */
     static int present_skip = -1; if (present_skip < 0) { present_skip = getenv("TOTK_PRESENT_SKIP") != NULL; if (present_skip) MLOG("【实验】TOTK_PRESENT_SKIP=1：不出图，只测渲染流水线"); }
     if (nogpu() || present_skip) { if (grab && present_skip && !nogpu()) grab_present(grab, src, crop, layer.drawableSize);
+        if (grab_game) grab_game(NULL);
         pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); return 1; }
     uint64_t dt0 = now_ns();
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
-    if (!dr) return 0;
+    if (!dr) { if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }
     int alloc_i = (int)((ticket * 2 + (interp >= 0 ? 0 : 1)) % 3);   // the interpolated frame of a ticket and the ticket's own frame use different allocators
     pthread_mutex_lock(&g_pq_mu);
     while (g_present_alloc_busy[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
@@ -11991,9 +12177,29 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [g_q4 waitForDrawable:dr];
     id<MTL4CommandBuffer> cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
+    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
     id<MTLBuffer> grab_buf = nil; size_t grab_w = dr.texture.width, grab_h = dr.texture.height;
-    if (grab) {
+    /* 玩家游戏帧（grab_game）：8 位源贴图拷出图裁切区域——游戏画面本身；裁切无效、意外格式或缓冲建不出时回退到下面的上屏拷贝。
+       The player's game frame (grab_game): an 8-bit source texture is copied as the present's crop region -- the game's picture
+       itself; an invalid crop, an unexpected format or a buffer that cannot be made falls back to the drawable copy below. */
+    BOOL game_sdr = grab_game && (src.pixelFormat == MTLPixelFormatRGBA8Unorm || src.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
+        src.pixelFormat == MTLPixelFormatBGRA8Unorm || src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
+    id<MTLBuffer> game_buf = nil; size_t game_w = src.width, game_h = src.height; NSUInteger game_x = 0, game_y = 0;
+    nvn_capture_region region;
+    if (game_sdr) game_sdr = nvn_capture_source_region(src.width, src.height, crop, &region);
+    if (game_sdr) { game_x = region.x; game_y = region.y; game_w = region.w; game_h = region.h; }
+    if (game_sdr) {
+        game_buf = game_w && game_h ? [g_dev newBufferWithLength:game_w * game_h * 4 options:MTLResourceStorageModeShared] : nil;
+        if (game_buf) {
+            res_add(game_buf); res_commit();   // resident before this command buffer runs (lesson 55)
+            id<MTL4ComputeCommandEncoder> ge = [cb computeCommandEncoder];
+            [ge barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+            [ge copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(game_x, game_y, 0) sourceSize:MTLSizeMake(game_w, game_h, 1)
+                       toBuffer:game_buf destinationOffset:0 destinationBytesPerRow:game_w * 4 destinationBytesPerImage:game_w * game_h * 4];
+            m4_end(ge);
+        } else { MLOG("【红】游戏帧截图：%zux%zu 读回缓冲建不出，回退到整窗画面", game_w, game_h); game_sdr = NO; }
+    }
+    if (grab || (grab_game && !game_sdr)) {   // 整窗拷贝：整窗截图诊断 + 游戏帧的回退 | the drawable copy: the window-shot diagnostic and the game frame's fallback
         grab_buf = grab_w && grab_h ? [g_dev newBufferWithLength:grab_w * grab_h * 4 options:MTLResourceStorageModeShared] : nil;
         if (grab_buf) {
             res_add(grab_buf); res_commit();   // resident before this command buffer runs (lesson 55)
@@ -12002,7 +12208,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
             [ge copyFromTexture:dr.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(grab_w, grab_h, 1)
                        toBuffer:grab_buf destinationOffset:0 destinationBytesPerRow:grab_w * 4 destinationBytesPerImage:grab_w * grab_h * 4];
             m4_end(ge);
-        } else { MLOG("【红】整窗截图：%zux%zu 读回缓冲建不出", grab_w, grab_h); grab(NULL); grab = nil; }
+        } else { MLOG("【红】整窗截图：%zux%zu 读回缓冲建不出", grab_w, grab_h); if (grab) grab(NULL); if (grab_game && !game_sdr) { grab_game(NULL); grab_game = nil; } grab = nil; }
     }
     id<MTLBuffer> src_buf = nil; size_t src_w = src.width, src_h = src.height;   // TOTK_WSHOT_SRC: the source picture of this present too
     if (grab && grab_src && src.pixelFormat == MTLPixelFormatRGBA8Unorm) {
@@ -12042,13 +12248,31 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                 CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; window_shot_save(img, path);
                 if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); CGColorSpaceRelease(cs); }
             res_remove(buf); }]; }
-    if (grab) { void (^g)(CGImageRef) = grab; id<MTLBuffer> buf = grab_buf; size_t w = grab_w, h = grab_h;
+    if (game_buf) { void (^g)(CGImageRef) = grab_game; id<MTLBuffer> buf = game_buf; size_t w = game_w, h = game_h; int flip = 0;   /* this game draws with the upper-left origin */
+        int bgra = src.pixelFormat == MTLPixelFormatBGRA8Unorm || src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;   // 字节序同 shot_body | the byte order as shot_body
+        [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
+            CGImageRef img = NULL; CGContextRef ctx = NULL; CGColorSpaceRef cs = NULL;
+            if (!f.error) {
+                if (flip) {   // lower-left origin: the picture's top is the source's last row (origin_ll; the screen shows it turned over)
+                    uint8_t *p = buf.contents, *t = malloc(w * 4);
+                    for (size_t y = 0; t && y < h / 2; y++) { memcpy(t, p + y * w * 4, w * 4); memcpy(p + y * w * 4, p + (h - 1 - y) * w * 4, w * 4); memcpy(p + (h - 1 - y) * w * 4, t, w * 4); }
+                    free(t);
+                }
+                cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+                CGBitmapInfo bi = bgra ? (kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little) : (CGBitmapInfo)kCGImageAlphaNoneSkipLast;
+                ctx = CGBitmapContextCreate(buf.contents, w, h, 8, w * 4, cs, bi);
+                img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; }
+            g(img);
+            if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); if (cs) CGColorSpaceRelease(cs);
+            res_remove(buf); }]; }
+    if (grab_buf) { void (^g)(CGImageRef) = grab; void (^gg)(CGImageRef) = grab_game && !game_sdr ? grab_game : nil; id<MTLBuffer> buf = grab_buf; size_t w = grab_w, h = grab_h;
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
             CGImageRef img = NULL; CGContextRef ctx = NULL; CGColorSpaceRef cs = NULL;
             if (!f.error) { cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
                 ctx = CGBitmapContextCreate(buf.contents, w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
                 img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; }
-            g(img);
+            if (g) g(img);
+            if (gg) gg(img);
             if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); if (cs) CGColorSpaceRelease(cs);
             res_remove(buf); }]; }
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {

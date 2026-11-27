@@ -99,7 +99,7 @@ def main():
     p.add_argument("--keys", type=Path, required=True, help="prod.keys dumped from your own Switch")
     p.add_argument("--work", type=Path, default=GAME_DIR / "Odyssey_build", help="build folder (default Odyssey_build)")
     p.add_argument("--firmware", type=Path, help="unpacked firmware NCA directory, for the system fonts of an NSP build")
-    p.add_argument("--developer-dir", default="/Applications/Xcode.app/Contents/Developer")
+    p.add_argument("--developer-dir", default=os.environ.get("DEVELOPER_DIR") or "/Applications/Xcode.app/Contents/Developer")
     p.add_argument("--skip-seed", action="store_true", help="leave out the whole-game shader seed (more first-play stutter)")
     p.add_argument("--render-res", default="2560x1440",
                    help="the largest docked 3D scene key 3 goes up to (default 2560x1440; the game starts at the shipped "

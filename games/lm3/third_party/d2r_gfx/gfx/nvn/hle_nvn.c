@@ -300,8 +300,9 @@ NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { TB(b
     /* TOTK_SIZE_CHAIN=<w>x<h> (diagnostic): the game call chain of the first 60 textures given this size (where render target sizes come from) */
     size_chain(w, h); }
 static void size_chain(int w, int h) {
-    static int sw = -1, sh, n; if (sw < 0) { const char *e = getenv("TOTK_SIZE_CHAIN"); if (!e || sscanf(e, "%dx%d", &sw, &sh) != 2) sw = 0; }
-    if (sw && w == sw && h == sh && n++ < 60) { char m[64]; snprintf(m, sizeof m, "texture size %dx%d", w, h); guest_chain(m); }
+    static int sw = -1, sh, n; if (sw < 0) { const char *e = getenv("TOTK_SIZE_CHAIN"); if (e && !strcmp(e, "dyn")) sw = -2; else if (!e || sscanf(e, "%dx%d", &sw, &sh) != 2) sw = 0; }
+    /* "dyn": the sizes a 1920x1080 dynamic resolution steps through (1500..1919 wide, 800..1079 high) */
+    if (sw && (sw == -2 ? w >= 1500 && w < 1920 && h >= 800 && h < 1080 : w == sw && h == sh) && n++ < 60) { char m[64]; snprintf(m, sizeof m, "texture size %dx%d", w, h); guest_chain(m); }
 }
 NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d) { TB(b)->d.width=w;TB(b)->d.height=h;TB(b)->d.depth=d; }
 NVN(nvnTextureBuilderSetLevels, void, NVNtextureBuilder *b, int v) { TB(b)->d.levels = v; }
@@ -1102,6 +1103,7 @@ static int cmdlog_on(void) {
     if (!on) return 0; if (f0 < 0) return 1; extern uint64_t g_frame_pub; return (long)g_frame_pub >= f0 && (long)g_frame_pub <= f1;
 }
 NVN(nvnCommandBufferReportCounter, void, NVNcommandBuffer *c, NVNcounterType t, NVNbufferAddress a) {
+    { static int on = -1, n; if (on < 0) on = getenv("TOTK_TS_CHAIN") != NULL; if (on && t == 0 && n++ < 4) { char m[64]; snprintf(m, sizeof m, "timestamp report -> %#llx", (unsigned long long)a); guest_chain(m); } }   /* diagnostic: which game code reports TIMESTAMP counters */
     if (cmdlog_on()) LOG("[cmd] F%llu ReportCounter type=%d addr=%#llx", (unsigned long long)g_frame_pub, (int)t, (unsigned long long)a);
     uint8_t *p = cmd_alloc(CB(c), 24); put_hdr(p, OP_REPORT_COUNTER, 24); uint64_t tt = t; memcpy(p + 8, &tt, 8); memcpy(p + 16, &a, 8);
 }
@@ -1895,6 +1897,33 @@ NVN(nvnBlendStateSetBlendFunc, void, NVNblendState *s, NVNblendFunc sr, NVNblend
     blend_st *o = ST(blend_st, s); o->src_rgb = sr; o->dst_rgb = dr; o->src_a = sa; o->dst_a = da;
 }
 NVN(nvnBlendStateSetBlendEquation, void, NVNblendState *s, NVNblendEquation er, NVNblendEquation ea) { ST(blend_st, s)->eq_rgb = er; ST(blend_st, s)->eq_a = ea; }
+/* Advanced blend modes (from games/mvdk; Luigi's Mansion 3 sets SCREEN, mode 0x16). NVN's default for advanced blending is
+   a premultiplied source with uncorrelated overlap: the Porter-Duff modes, PLUS and SCREEN (Cs + Cd - Cs*Cd) are then exact
+   as ordinary blend factors with the ADD equation. MULTIPLY is exact over an opaque destination (Cd * (Cs + 1 - As)). The
+   other modes need the destination in the shader: they draw as SRC_OVER, logged once each, instead of stopping the game. */
+NVN(nvnBlendStateSetAdvancedMode, void, NVNblendState *s, NVNblendAdvancedMode m) {
+    enum { Z = NVN_BLEND_FUNC_ZERO, O = NVN_BLEND_FUNC_ONE, SA = NVN_BLEND_FUNC_SRC_ALPHA, ISA = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA,
+           DA = NVN_BLEND_FUNC_DST_ALPHA, IDA = NVN_BLEND_FUNC_ONE_MINUS_DST_ALPHA, ISC = NVN_BLEND_FUNC_ONE_MINUS_SRC_COLOR,
+           DC = NVN_BLEND_FUNC_DST_COLOR };
+    static const struct { int mode, src, dst, src_a, dst_a; } pd[] = {
+        {NVN_BLEND_ADVANCED_MODE_ZERO, Z, Z, Z, Z},         {NVN_BLEND_ADVANCED_MODE_SRC, O, Z, O, Z},
+        {NVN_BLEND_ADVANCED_MODE_DST, Z, O, Z, O},          {NVN_BLEND_ADVANCED_MODE_SRC_OVER, O, ISA, O, ISA},
+        {NVN_BLEND_ADVANCED_MODE_DST_OVER, IDA, O, IDA, O}, {NVN_BLEND_ADVANCED_MODE_SRC_IN, DA, Z, DA, Z},
+        {NVN_BLEND_ADVANCED_MODE_DST_IN, Z, SA, Z, SA},     {NVN_BLEND_ADVANCED_MODE_SRC_OUT, IDA, Z, IDA, Z},
+        {NVN_BLEND_ADVANCED_MODE_DST_OUT, Z, ISA, Z, ISA},  {NVN_BLEND_ADVANCED_MODE_SRC_ATOP, DA, ISA, Z, O},
+        {NVN_BLEND_ADVANCED_MODE_DST_ATOP, IDA, SA, O, Z},  {NVN_BLEND_ADVANCED_MODE_XOR, IDA, ISA, IDA, ISA},
+        {NVN_BLEND_ADVANCED_MODE_PLUS, O, O, O, O},         {NVN_BLEND_ADVANCED_MODE_PLUS_CLAMPED, O, O, O, O},
+        {NVN_BLEND_ADVANCED_MODE_PLUS_CLAMPED_ALPHA, O, O, O, O},
+        {NVN_BLEND_ADVANCED_MODE_SCREEN, O, ISC, O, ISA},   {NVN_BLEND_ADVANCED_MODE_MULTIPLY, DC, ISA, O, ISA}};
+    if (m == NVN_BLEND_ADVANCED_MODE_NONE) return;
+    blend_st *o = ST(blend_st, s); size_t i = 0;
+    while (i < sizeof pd / sizeof *pd && pd[i].mode != (int)m) i++;
+    int known = i < sizeof pd / sizeof *pd; if (!known) i = 3;   /* SRC_OVER */
+    o->src_rgb = pd[i].src; o->dst_rgb = pd[i].dst; o->src_a = pd[i].src_a; o->dst_a = pd[i].dst_a;
+    o->eq_rgb = o->eq_a = NVN_BLEND_EQUATION_ADD;
+    static uint64_t said; if (!(said & 1ull << (m & 63))) { said |= 1ull << (m & 63);
+        LOG("advanced blend mode %#x %s", (int)m, known ? "as ordinary blend factors (premultiplied)" : "not implemented: drawn as SRC_OVER"); }
+}
 NVN(nvnColorStateSetDefaults, void, NVNcolorState *s) { *ST(color_st, s) = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; }
 NVN(nvnColorStateSetBlendEnable, void, NVNcolorState *s, int i, uint32_t en) {
     color_st *o = ST(color_st, s); if (i < 0 || i > 7) return;
@@ -2269,6 +2298,13 @@ void nvn_control_pacing(int vsync,int cap){
 int nvn_control_vsync(void){uint64_t p=atomic_load(&g_control_pacing);return p?(int)((p>>32)&1):-1;}
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
    the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). */
+/* The leaderboard's pacing (runtime/board_upload.h, as games/odyssey and games/acnh): no frame lock and no interpolation.
+   Echoes of Wisdom plays at the 60 fps its own logic counts (README.md: more than 60 is not done), and MetalFX frame
+   interpolation is not offered for this game (the settings panel's Display page). */
+void nvn_board_pacing(int *lock, int *interp) {
+    *lock = 0;
+    *interp = 0;
+}
 static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && (m == MFX_OFF || m == MFX_MAX); }
 /* 30+30 on a display whose rate is not a multiple of 30 (the user's 100 Hz): the game is paced by our own clock at exactly
    30 fps instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
@@ -2390,6 +2426,8 @@ __attribute__((weak)) int dm_thermal_now(void) { return -1; }   // 缺省（Mac�
 // Per-frame ring for the long-frame log (GPU time only arrives 8 frames late, so store first and judge later)
 #define LFN 16
 typedef struct { uint64_t f; double fr, nv, t_s, make_ms, up_mb, up_ms; unsigned pso, lib, up, rup; int ls; } lf_rec;   // ls：这一帧出图时读取画面是否盖着 | ls: whether the loading screen was covering the picture when this frame was presented
+#include "fps_overlay.h"   // hitch_info: every long frame on the corner panel (shared fps_overlay.c; as games/odyssey and games/acnh)
+extern void hitch_overlay_note(const hitch_info *h, uint64_t now_ns) __attribute__((weak));
 static lf_rec g_lf[LFN];
 __attribute__((weak)) void dm_longframe_note(const char *what) { LOG("[长帧] %s", what); }   // 缺省（图形单测）；宿主 diag.c 的强定义补上场景上下文并写 perf.txt | Default (graphics unit tests); the strong definition in the host's diag.c adds scene context and writes perf.txt
 extern void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns); extern uint64_t mtl_upload_bytes(void); extern void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
@@ -2808,6 +2846,11 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           // "Long" is relative to recent conditions: when running steadily at 30 fps (menus / windowless host) or under sustained overload, every frame is > 20 ms; those are not long frames and must not flood the log - a frame has to be 40% above the sliding mean of the last 16 frames to count
           static double ef = 16.7, eg = 8; int lf = r->fr > 20.0 && r->fr > 1.4 * ef, lg = g > 16.7 && g > 1.3 * eg;
           if (r->f == f - 8) { ef += ((r->fr < 3 * ef ? r->fr : 3 * ef) - ef) / 16; eg += ((g < 3 * eg ? g : 3 * eg) - eg) / 16; }
+          if (r->f == f - 8 && f - 8 > 0 && (lf || lg) && hitch_overlay_note) {   // every long frame on the panel too ("FPS 全信息", as games/odyssey)
+              const lf_rec *pv = &g_lf[(f - 9) % LFN];
+              hitch_info h = {r->t_s, r->fr, r->nv, g, r->make_ms, r->up_ms, r->up_mb, r->pso, r->lib, r->up, r->rup, r->ls || (f >= 9 && pv->f == f - 9 && pv->ls)};
+              hitch_overlay_note(&h, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));   // the panel's clock (nvn_mtl.m shader_overlay_prepare)
+          }
           if (on && r->f == f - 8 && f - 8 > 0 && (lf || lg)) { char b[512];
               snprintf(b, sizeof b, "帧 %llu（%.2f s）整帧 %.1f ms，提交+出图 %.1f ms，GPU %.1f ms；新建管线 %u 条 + 着色器库 %u 个共 %.1f ms；上传贴图 首传 %u 张 + 重传 %u 次 %.1f MB / %.1f ms",
                        (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->up, r->rup, r->up_mb, r->up_ms);
