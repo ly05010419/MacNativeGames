@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>StringsTable</key>
+	<string>Root</string>
+	<key>PreferenceSpecifiers</key>
+	<array>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>遊戲語言 · Game language</string>
+			<key>FooterText</key>
+			<string>重新啟動遊戲後生效 · takes effect after relaunching the game</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_LANG</string>
+			<key>Title</key>
+			<string>語言 · Language</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>Values</key>
+			<array>
+				<string></string>
+				<string>zh-Hant</string>
+				<string>zh-Hans</string>
+				<string>en-US</string>
+				<string>ja</string>
+				<string>de</string>
+				<string>es</string>
+				<string>fr</string>
+				<string>it</string>
+				<string>nl</string>
+				<string>ru</string>
+				<string>ko</string>
+			</array>
+			<key>Titles</key>
+			<array>
+				<string>自動 · 跟隨系統語言 · Follow system language</string>
+				<string>繁體中文</string>
+				<string>简体中文</string>
+				<string>English</string>
+				<string>日本語</string>
+				<string>Deutsch</string>
+				<string>Español</string>
+				<string>Français</string>
+				<string>Italiano</string>
+				<string>Nederlands</string>
+				<string>Русский</string>
+				<string>한국어</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

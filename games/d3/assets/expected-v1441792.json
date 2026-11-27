@@ -1,0 +1,23 @@
+{
+    "_comment": "Verified Diablo III Eternal Collection v1441792 code, rewrite bytes and merged RomFS.",
+    "title_id": "01001B300B9BE000",
+    "update_title_id": "01001B300B9BE800",
+    "version": 1441792,
+    "display_version": "2.7.6",
+    "main_build_id": "2607A74F5DF7754CC0357B5DF7E496931355D8CA",
+    "exefs_sha256": {
+        "main": "7f3910c7a15d4bc053cdc8204f1abcac526c57f205c584d1d97779a1a10a98c3",
+        "main.npdm": "ba4ca97213392af9e27c8f7b30389485ba858253e5bdb355ab35427470132435",
+        "rtld": "bc52eeaae18053433a64caeeed0c12b63fd29fbde635346d732203ec41f585f0",
+        "sdk": "21e08d575abd8cb08ba1ab3be3fa92c02a1384428f161e8e88eb578e897f2c0b"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "3d8df7cf3f9526d0379f93eaea1b50f7c53a61a7d0d4e4453a0462a41f124a7a",
+        "sdk.patched.bin": "3355e7e15349f04eceeebe07fece2df8b6d2c5e44e95c4738623c554faffe5c0"
+    },
+    "romfs": {
+        "size": 17144418552,
+        "sha256": "b766158d487901731bc7207c2953753bc1e12519f16df30b3356e06711fa1935",
+        "files": 37
+    }
+}

@@ -66,6 +66,19 @@
     }
    ]
   },
+  "games/d3/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-11-27",
+     "commit": "feat/d3-itt-mcd-mcd2-ports",
+     "why": "Standalone prebuilt shader translator copied into games/d3 from the shared D2R baseline (matches games/alc, games/by3, games/dread code_sha256).",
+     "necessary": "Each standalone port directory carries its own prebuilt macOS ARM64 translator checked against totk_xlate.sha256 without reading another game's folder.",
+     "evidence": "shasum -a 256 games/d3/prebuilt/macos-arm64/totk_xlate matches games/d3/prebuilt/macos-arm64/totk_xlate.sha256; standalone port import"
+    }
+   ]
+  },
   "games/dread/prebuilt/macos-arm64/totk_xlate": {
    "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
    "history": [
@@ -89,6 +102,19 @@
      "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 d139cb41（feat: add The Legend of Zelda: Echoes of Wisdom 1.1.0 community port）。之前的变化没有逐条记录理由。",
      "necessary": "基线，不是一次改动（建账前已在使用）。",
      "evidence": "git log -- games/eow/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/itt/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "a2816869483d131499bf59b49fd7d6f104556893da1a4855aaff29d157cd86a7",
+   "history": [
+    {
+     "code_sha256": "a2816869483d131499bf59b49fd7d6f104556893da1a4855aaff29d157cd86a7",
+     "date": "2026-11-27",
+     "commit": "feat/d3-itt-mcd-mcd2-ports",
+     "why": "Standalone prebuilt shader translator copied into games/itt for It Takes Two (shader-resource reflection & async translation support).",
+     "necessary": "Each standalone port directory carries its own prebuilt macOS ARM64 translator checked against totk_xlate.sha256 without reading another game's folder.",
+     "evidence": "shasum -a 256 games/itt/prebuilt/macos-arm64/totk_xlate matches games/itt/prebuilt/macos-arm64/totk_xlate.sha256; standalone port import"
     }
    ]
   },
@@ -167,6 +193,32 @@
      "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 f8570df6（fix(lm3): our rebuild of its translator, the root README rows, and no copied Tears of the Kingdom patch code (after PR #218)）。之前的变化没有逐条记录理由。",
      "necessary": "基线，不是一次改动（建账前已在使用）。",
      "evidence": "git log -- games/lm3/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/mcd/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "52bf5a58becd78c5c1ff34f6b8a3a797ec95b9692463687defa3eac8bf3bc3ff",
+   "history": [
+    {
+     "code_sha256": "52bf5a58becd78c5c1ff34f6b8a3a797ec95b9692463687defa3eac8bf3bc3ff",
+     "date": "2026-11-27",
+     "commit": "feat/d3-itt-mcd-mcd2-ports",
+     "why": "Standalone prebuilt shader translator in games/mcd built with descriptor-array reflection for Unreal Engine 4 bindless resource tables.",
+     "necessary": "Minecraft Dungeons relies on UE4 bindless texture/sampler descriptor-array reflection not present in the stock baseline translator.",
+     "evidence": "shasum -a 256 games/mcd/prebuilt/macos-arm64/totk_xlate matches games/mcd/prebuilt/macos-arm64/totk_xlate.sha256; standalone port import"
+    }
+   ]
+  },
+  "games/mcd2/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "be9704d3e37d30552c12ca932365ba5504a3feaa7fd4eb8616fc90ba95bcdbe6",
+   "history": [
+    {
+     "code_sha256": "be9704d3e37d30552c12ca932365ba5504a3feaa7fd4eb8616fc90ba95bcdbe6",
+     "date": "2026-11-27",
+     "commit": "feat/d3-itt-mcd-mcd2-ports",
+     "why": "Standalone prebuilt shader translator in games/mcd2 with updated descriptor-array & dynamic pool-length reflection support.",
+     "necessary": "Minecraft Dungeons 2 relies on UE4 bindless descriptor-array reflection specific to its self-contained graphics runtime.",
+     "evidence": "shasum -a 256 games/mcd2/prebuilt/macos-arm64/totk_xlate matches games/mcd2/prebuilt/macos-arm64/totk_xlate.sha256; standalone port import"
     }
    ]
   },
