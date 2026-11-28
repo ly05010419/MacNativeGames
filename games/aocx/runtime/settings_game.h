@@ -162,13 +162,6 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   ^int{return window&&(window.styleMask&NSWindowStyleMaskFullScreen)?0:1;},
   ^(int v){runtime_setting_save("display.txt",v?"window":"fullscreen","display");
    if(window&&(!!(window.styleMask&NSWindowStyleMaskFullScreen))!=(v==0))[window toggleFullScreen:nil];})];
- /* The session limit (session-minutes.txt, 0 = none; the launcher reads it again while the game runs): the copied
-    renderer has caused GPU driver panics in long sessions, so 20 minutes stays the default. */
- [rows addObject:settings_row(settings_text("单次游玩时长","Session limit"),
-  @[settings_text("20 分钟","20 minutes"),settings_text("60 分钟","60 minutes"),settings_text("90 分钟","90 minutes"),
-    settings_text("120 分钟","120 minutes"),settings_text("不限","No limit")],@[@20,@60,@90,@120,@0],
-  ^int{char w[16];return runtime_setting_word("session-minutes.txt",w,sizeof w)?atoi(w):20;},
-  ^(int v){char w[16];snprintf(w,sizeof w,"%d",v);runtime_setting_save("session-minutes.txt",w,"session limit");})];
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],

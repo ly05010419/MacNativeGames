@@ -24,7 +24,7 @@ you own them, and your own `prod.keys`. The work folder holds game data: never c
 |---|---|
 | Playing the battle through (attacks, the mission's end), the title screen and menus after the prologue, saves past the first-start settings | next |
 | The iPhone / iPad app on a device | the app builds (below); not run on a device |
-| 60 fps, the app (`.app`), MNG Launcher card | later |
+| 60 fps, MNG Launcher card | later; the macOS `.app` package is now supported |
 
 ## Build (bring-up)
 
@@ -90,3 +90,47 @@ textures, the copy image stride, c1 segments beyond 4 KB: `nvn_refl.m` compiled 
 layer, the add-on pins, and that the port is on the Zelda line. The repository's `tests/test_hud_panel_shared.py` lists
 this game on the shared panel, `tests/test_active_players.py` its start, and `tests/test_ios_ports_unified.py`
 (`AocxPort`, `PORTS`) keeps its iPhone / iPad app on the shared shell, build and front end.
+
+
+## macOS App
+
+The prepared Apple-silicon Mac build can be packaged as a Finder-launchable
+`.app`. This does not rebuild the game.
+
+From the repository root:
+
+```sh
+python3 games/aocx/scripts/package_app.py \
+  --work "$HOME/AoC-Build" \
+  --output "$HOME/Applications/Hyrule Warriors Age of Calamity.app"
+```
+
+The app contains the native runtime, shader tools, rewritten game modules,
+and RomFS indexes. The 11.7 GB `romfs.bin` stays outside the app at:
+
+```text
+~/Library/Application Support/MacNativeGames/AOCX/GameData/romfs.bin
+```
+
+If this file is missing, packaging installs it from the work folder. If it
+already exists, its size and SHA-256 are checked; a mismatching existing file
+is never overwritten.
+
+Writable data is kept separately under:
+
+```text
+~/Library/Application Support/MacNativeGames/AOCX/
+    profile/          saves and settings
+    backups/          save backups (five recent starts)
+    shader-cache/     Metal shader cache
+    game-slot/
+    GameData/         external RomFS image
+    last-run.log
+    previous-run.log
+```
+
+The app uses the Mac's preferred language and the game's native AppKit
+frontend. The `.app` package being available does not mean the game is
+complete: the current bring-up status above still applies. In particular,
+the first battle has not yet been verified through its ending, and later
+menus and saves remain unfinished.
